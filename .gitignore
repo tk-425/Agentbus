@@ -1,0 +1,12 @@
+# BEGIN MCPKIT
+# mcpkit generated local MCP wrappers
+.mcpkit/
+# END MCPKIT
+
+.agents/
+.claude/
+.codex/
+.mcpkit/
+.mcp.json
+
+
