@@ -8,5 +8,16 @@
 .codex/
 .mcpkit/
 .mcp.json
+AGENTS.md
+CLAUDE.md
 
+.docs/
 
+.devflow/
+.devflow-archive/
+
+CONTEXT.md
+
+# Go
+agentbus
+dist/
