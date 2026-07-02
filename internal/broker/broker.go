@@ -1,0 +1,165 @@
+package broker
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/tk-425/agentbus/internal/message"
+	"github.com/tk-425/agentbus/internal/multiplexer"
+	"github.com/tk-425/agentbus/internal/registry"
+)
+
+// Port scan range for Serve: the broker binds the first free loopback port.
+const (
+	portScanStart = 7373
+	portScanEnd   = 7473
+)
+
+// maxBodyBytes caps a Message body at 32KB. Larger bodies are truncated once,
+// here at the broker — agents should pass file paths for large content.
+const maxBodyBytes = 32768
+
+// truncationMarker is appended to a body that exceeded maxBodyBytes.
+const truncationMarker = "\n[truncated — pass file paths for large content]"
+
+// Broker is the in-memory message bus: a Registry of Agent instances plus a
+// per-agent Queue, optionally exposed over HTTP by Serve. Send enqueues a
+// Message for its recipient; Inbox drains a recipient's queue. The broker is the
+// single truncation enforcement point — the watcher and queue never truncate.
+type Broker struct {
+	Registry *registry.Registry
+	queue    *Queue
+
+	db  *sql.DB      // shared store for the brokers row; nil outside Serve
+	srv *http.Server // set while Serve is running, for Shutdown
+}
+
+// New returns a Broker with an empty registry and queue.
+func New() *Broker {
+	return &Broker{
+		Registry: registry.New(),
+		queue:    NewQueue(),
+	}
+}
+
+// AttachDB lets Serve record this broker's row in the shared brokers table.
+// Passing a nil db is a no-op (the in-memory broker runs without persistence).
+func (b *Broker) AttachDB(db *sql.DB) {
+	b.db = db
+}
+
+// Register binds a bare agent type to a pane in project and returns the
+// auto-suffixed Agent instance name.
+func (b *Broker) Register(project, agentType, paneID string) (string, error) {
+	return b.Registry.RegisterType(project, agentType, paneID)
+}
+
+// Send enqueues msg for its To recipient, truncating an over-cap body once.
+func (b *Broker) Send(msg message.Message) error {
+	msg.Body = truncate(msg.Body)
+	b.queue.Enqueue(msg)
+	return nil
+}
+
+// DefaultPortFile returns the path the broker writes its chosen port to,
+// ~/.agentbus/port. Clients read it to find the running broker.
+func DefaultPortFile() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "agentbus-port")
+	}
+	return filepath.Join(home, ".agentbus", "port")
+}
+
+// Serve binds the first free loopback port in [portScanStart, portScanEnd],
+// writes it to portFile, records the broker's row in the shared brokers table
+// (when a DB is attached), and serves the HTTP handler until Shutdown is called.
+// On return it removes the port file and the brokers row. mux identifies the
+// multiplexer backend recorded for this broker. Serve blocks.
+func (b *Broker) Serve(projectRoot, portFile string, mux multiplexer.Multiplexer) error {
+	ln, port, err := listenInRange()
+	if err != nil {
+		return err
+	}
+
+	if err := writePortFile(portFile, port); err != nil {
+		ln.Close()
+		return err
+	}
+	defer os.Remove(portFile)
+
+	// Attach the registry before the handler accepts requests, so every agent
+	// registered over HTTP write-throughs a row carrying this broker's port —
+	// the address peers forward to (Task 7 routing).
+	b.Registry.AttachDB(b.db, port)
+
+	if b.db != nil {
+		b.db.Exec(`
+			INSERT INTO brokers (project_root, port, multiplexer, pid)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(project_root) DO UPDATE SET
+				port = excluded.port, multiplexer = excluded.multiplexer, pid = excluded.pid`,
+			projectRoot, port, fmt.Sprintf("%T", mux), os.Getpid())
+		defer b.db.Exec(`DELETE FROM brokers WHERE project_root = ?`, projectRoot)
+	}
+
+	// ReadHeaderTimeout guards against a slow-header (Slowloris) client even
+	// though the listener is loopback-only.
+	b.srv = &http.Server{Handler: b.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	if err := b.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+		return err
+	}
+	return nil
+}
+
+// Shutdown gracefully stops a running Serve.
+func (b *Broker) Shutdown(ctx context.Context) error {
+	if b.srv == nil {
+		return nil
+	}
+	return b.srv.Shutdown(ctx)
+}
+
+// listenInRange returns a listener on the first free loopback port in the scan
+// range, along with that port.
+func listenInRange() (net.Listener, int, error) {
+	for port := portScanStart; port <= portScanEnd; port++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:"+strconv.Itoa(port))
+		if err == nil {
+			return ln, port, nil
+		}
+	}
+	return nil, 0, fmt.Errorf("no free port in %d-%d", portScanStart, portScanEnd)
+}
+
+func writePortFile(path string, port int) error {
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create port-file dir: %w", err)
+		}
+	}
+	return os.WriteFile(path, []byte(strconv.Itoa(port)), 0o600)
+}
+
+// truncate caps body at maxBodyBytes, appending truncationMarker when it
+// overflows. Bodies at or under the cap pass through unchanged. Truncation is
+// idempotent: an already-truncated body re-truncates to the same prefix +
+// single marker rather than growing.
+func truncate(body string) string {
+	if len(body) <= maxBodyBytes {
+		return body
+	}
+	return body[:maxBodyBytes] + truncationMarker
+}
+
+// Inbox drains and returns all messages queued for agent.
+func (b *Broker) Inbox(agent string) []message.Message {
+	return b.queue.Drain(agent)
+}
