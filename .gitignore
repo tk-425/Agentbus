@@ -6,8 +6,10 @@
 .agents/
 .claude/
 .codex/
+.opencode/
 .mcpkit/
 .mcp.json
+opencode.json
 AGENTS.md
 CLAUDE.md
 
