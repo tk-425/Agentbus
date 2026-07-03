@@ -137,6 +137,44 @@ func TestListSharedShowsCrossProjectAgentInstances(t *testing.T) {
 	}
 }
 
+// TestLookupSharedByPaneResolvesFromDB: a fresh registry with empty in-memory
+// maps (as every out-of-process CLI invocation has) still resolves a pane to
+// its Agent instance name through the shared DB — the identity path `whoami`
+// depends on. The in-memory-only ResolveByPane cannot, confirming the DB path
+// is necessary.
+func TestLookupSharedByPaneResolvesFromDB(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "agentbus.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	writer := New()
+	writer.AttachDB(d, 7373)
+	if _, err := writer.RegisterType("proj-a", "claude", "%pane7"); err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+
+	fresh := New()
+	fresh.AttachDB(d, 0)
+	if _, ok := fresh.ResolveByPane("%pane7"); ok {
+		t.Fatalf("ResolveByPane should miss on a fresh in-memory registry")
+	}
+	inst, ok := fresh.LookupSharedByPane("%pane7")
+	if !ok || inst.Name != "claude-1" || inst.Project != "proj-a" {
+		t.Fatalf("LookupSharedByPane = %+v ok=%v, want proj-a/claude-1", inst, ok)
+	}
+	if _, ok := fresh.LookupSharedByPane("%nope"); ok {
+		t.Fatalf("unknown pane should not resolve")
+	}
+	if _, ok := fresh.LookupSharedByPane(""); ok {
+		t.Fatalf("empty pane should not resolve")
+	}
+}
+
 func TestResolveUnregisterTargetRemovesLocalAndQualifiedTargetsExactly(t *testing.T) {
 	d, err := db.Open(filepath.Join(t.TempDir(), "agentbus.db"))
 	if err != nil {

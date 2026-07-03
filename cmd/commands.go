@@ -191,6 +191,39 @@ func resolvePaneID(explicit string) string {
 	return os.Getenv("HERDR_PANE")
 }
 
+var whoamiCmd = &cobra.Command{
+	Use:   "whoami",
+	Short: "Print the Agent instance name registered for the current pane",
+	RunE:  runWhoami,
+}
+
+func runWhoami(cmd *cobra.Command, args []string) error {
+	paneID := resolvePaneID("")
+	if paneID == "" {
+		return fmt.Errorf("cannot determine pane: not inside tmux/herdr")
+	}
+
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		return err
+	}
+
+	r := registry.New()
+	r.AttachDB(d, 0)
+	inst, ok := r.LookupSharedByPane(paneID)
+	if !ok {
+		return fmt.Errorf("this pane is not registered (run `agentbus register --name <type>` or `agentbus discover`)")
+	}
+	if _, err := fmt.Fprintln(cmd.OutOrStdout(), inst.Name); err != nil {
+		return err
+	}
+	return nil
+}
+
 var unregisterName string
 
 var unregisterCmd = &cobra.Command{

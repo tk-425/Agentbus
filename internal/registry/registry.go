@@ -259,6 +259,28 @@ func (r *Registry) lookupSharedByName(name string) (Instance, bool) {
 	return inst, true
 }
 
+// LookupSharedByPane resolves the Agent instance bound to paneID through the
+// shared agents table. Out-of-process CLI commands (e.g. `whoami`) run with an
+// empty in-memory registry, so pane identity must come from the DB, not the
+// byPane cache ResolveByPane reads.
+func (r *Registry) LookupSharedByPane(paneID string) (Instance, bool) {
+	r.mu.Lock()
+	db := r.db
+	r.mu.Unlock()
+	if db == nil || paneID == "" {
+		return Instance{}, false
+	}
+	var inst Instance
+	err := db.QueryRow(
+		`SELECT project, name, broker_port, pane_id FROM agents WHERE pane_id = ? ORDER BY project LIMIT 1`,
+		paneID,
+	).Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID)
+	if err != nil {
+		return Instance{}, false
+	}
+	return inst, true
+}
+
 // ResolveByPane returns the Agent instance bound to paneID, deriving identity
 // from the pane a command runs in.
 func (r *Registry) ResolveByPane(paneID string) (Instance, bool) {
