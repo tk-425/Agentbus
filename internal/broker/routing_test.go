@@ -53,6 +53,7 @@ func newSharedDB(t *testing.T) *sql.DB {
 func newPeerBroker(t *testing.T, d *sql.DB, project string) *broker.Broker {
 	t.Helper()
 	b := broker.New()
+	b.AttachDB(d)
 	b.Registry.SetLocalProject(project)
 	srv := httptest.NewServer(b.Handler())
 	t.Cleanup(srv.Close)
@@ -161,5 +162,38 @@ func TestRoutingCrossProjectReplyRoutesToRequesterBroker(t *testing.T) {
 	}
 	if stray := replierBroker.Inbox(requester); len(stray) != 0 {
 		t.Fatalf("cross-project Reply must not enqueue on the replier's broker, got %+v", stray)
+	}
+}
+
+func TestRoutingForwardedRequestPersistsDurableHistoryOnRecipientBroker(t *testing.T) {
+	d := newSharedDB(t)
+	senderBroker := newPeerBroker(t, d, "proj-a")
+	recipientBroker := newPeerBroker(t, d, "proj-b")
+
+	recipient, err := recipientBroker.Registry.RegisterType("proj-b", "claude", "%2")
+	if err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+
+	req := message.Message{ID: "m-forward", Kind: message.KindRequest, From: "codex-1", To: recipient + "@proj-b", Body: "cross"}
+	if err := senderBroker.Route(req); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	if got := recipientBroker.Inbox(recipient); len(got) != 1 {
+		t.Fatalf("Inbox length = %d, want 1", len(got))
+	}
+
+	history, err := db.RecentMessages(d, 20)
+	if err != nil {
+		t.Fatalf("RecentMessages: %v", err)
+	}
+	if len(history) == 0 {
+		t.Fatalf("RecentMessages should include forwarded Request")
+	}
+	if history[0].ID != "m-forward" || history[0].To != recipient || history[0].Body != "cross" {
+		t.Fatalf("forwarded durable history mismatch: %+v", history[0])
+	}
+	if history[0].Kind != message.KindRequest {
+		t.Fatalf("forwarded durable history kind = %q, want %q", history[0].Kind, message.KindRequest)
 	}
 }

@@ -110,6 +110,39 @@ func (c *Client) Inbox(agent string) []message.Message {
 	return msgs
 }
 
+// Requests drains only Request messages for agent. The watcher uses this path
+// so terminal Replies remain available for a human inbox read.
+func (c *Client) Requests(agent string) []message.Message {
+	if c.broker != nil {
+		return c.broker.Requests(agent)
+	}
+	var requests []message.Message
+	for _, msg := range c.Inbox(agent) {
+		if msg.Kind == message.KindRequest {
+			requests = append(requests, msg)
+		}
+	}
+	return requests
+}
+
+// UnnotifiedReplies returns Replies awaiting an arrival notification for
+// agent, without draining them (ADR-0002). Watchers run inside the broker
+// process, so this is in-process only; over HTTP it reports none.
+func (c *Client) UnnotifiedReplies(agent string) []message.Message {
+	if c.broker != nil {
+		return c.broker.UnnotifiedReplies(agent)
+	}
+	return nil
+}
+
+// MarkNotified records that arrival notifications for these message IDs were
+// injected. In-process only, like UnnotifiedReplies.
+func (c *Client) MarkNotified(ids []string) {
+	if c.broker != nil {
+		c.broker.MarkNotified(ids)
+	}
+}
+
 // Ack acknowledges a delivered message by id for agent.
 func (c *Client) Ack(agent, id string) error {
 	if c.broker != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tk-425/agentbus/internal/db"
 	"github.com/tk-425/agentbus/internal/message"
 	"github.com/tk-425/agentbus/internal/multiplexer"
 	"github.com/tk-425/agentbus/internal/registry"
@@ -62,8 +64,15 @@ func (b *Broker) Register(project, agentType, paneID string) (string, error) {
 }
 
 // Send enqueues msg for its To recipient, truncating an over-cap body once.
+// When a shared DB is attached, the same boundary also records durable
+// Request/Reply history. History is best-effort: a failed write only degrades
+// `log` completeness and must never block live delivery, since the inbox is the
+// live surface and durable history is a separate concern (spec Key Decisions).
 func (b *Broker) Send(msg message.Message) error {
 	msg.Body = truncate(msg.Body)
+	if err := db.RecordMessage(b.db, msg); err != nil {
+		log.Printf("agentbus: record message %s history: %v", msg.ID, err)
+	}
 	b.queue.Enqueue(msg)
 	return nil
 }
@@ -107,6 +116,8 @@ func (b *Broker) Serve(projectRoot, portFile string, mux multiplexer.Multiplexer
 			ON CONFLICT(project_root) DO UPDATE SET
 				port = excluded.port, multiplexer = excluded.multiplexer, pid = excluded.pid`,
 			projectRoot, port, fmt.Sprintf("%T", mux), os.Getpid())
+		projectName := filepath.Base(projectRoot)
+		defer b.db.Exec(`DELETE FROM agents WHERE project = ?`, projectName)
 		defer b.db.Exec(`DELETE FROM brokers WHERE project_root = ?`, projectRoot)
 	}
 
@@ -162,4 +173,22 @@ func truncate(body string) string {
 // Inbox drains and returns all messages queued for agent.
 func (b *Broker) Inbox(agent string) []message.Message {
 	return b.queue.Drain(agent)
+}
+
+// Requests drains and returns only Request messages queued for agent, leaving
+// terminal inbox-only Replies available for a human inbox read.
+func (b *Broker) Requests(agent string) []message.Message {
+	return b.queue.DrainRequests(agent)
+}
+
+// UnnotifiedReplies returns queued Replies for agent whose arrival has not yet
+// been announced, without draining them (ADR-0002).
+func (b *Broker) UnnotifiedReplies(agent string) []message.Message {
+	return b.queue.UnnotifiedReplies(agent)
+}
+
+// MarkNotified records that arrival notifications for these message IDs were
+// injected.
+func (b *Broker) MarkNotified(ids []string) {
+	b.queue.MarkNotified(ids)
 }

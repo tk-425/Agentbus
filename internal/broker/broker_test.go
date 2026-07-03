@@ -1,11 +1,16 @@
 package broker
 
 import (
+	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/tk-425/agentbus/internal/db"
 	"github.com/tk-425/agentbus/internal/message"
+	"github.com/tk-425/agentbus/internal/multiplexer"
 )
 
 // drainBody sends msg through the broker and returns the single delivered body.
@@ -82,5 +87,69 @@ func TestTruncateWritesNoTempFile(t *testing.T) {
 
 	if len(after) != len(before) {
 		t.Fatalf("truncate must not write overflow to disk: temp entries %d -> %d", len(before), len(after))
+	}
+}
+
+func TestServeShutdownRemovesProjectAgentsFromSharedRegistry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agentbus.db")
+	d, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	b := New()
+	b.AttachDB(d)
+	b.Registry.SetLocalProject("proj-a")
+
+	projectRoot := filepath.Join(t.TempDir(), "proj-a")
+	portFile := filepath.Join(t.TempDir(), "port")
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- b.Serve(projectRoot, portFile, multiplexer.NewMock())
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(portFile); err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := os.Stat(portFile); err != nil {
+		t.Fatalf("port file not created: %v", err)
+	}
+
+	if _, err := b.Register("proj-a", "claude", "%1"); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	var before int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM agents WHERE project = ?`, "proj-a").Scan(&before); err != nil {
+		t.Fatalf("count agents before shutdown: %v", err)
+	}
+	if before != 1 {
+		t.Fatalf("agent count before shutdown = %d, want 1", before)
+	}
+
+	if err := b.Shutdown(context.TODO()); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	var after int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM agents WHERE project = ?`, "proj-a").Scan(&after); err != nil {
+		t.Fatalf("count agents after shutdown: %v", err)
+	}
+	if after != 0 {
+		t.Fatalf("agent count after shutdown = %d, want 0", after)
 	}
 }

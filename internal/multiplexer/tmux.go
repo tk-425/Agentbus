@@ -58,6 +58,37 @@ func (x *Tmux) Inject(paneID, text string) error {
 	return nil
 }
 
+// PressEnter sends a lone Enter keypress to the pane.
+func (x *Tmux) PressEnter(paneID string) error {
+	if out, err := exec.Command("tmux", "send-keys", "-t", paneID, "Enter").CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux send-keys Enter: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// AwaitBusy approximates the working transition the way IsIdle approximates
+// Idle: the pane is considered busy once its captured output changes from the
+// snapshot taken at call time. Unchanged output for the whole timeout reports
+// the transition as unobserved.
+func (x *Tmux) AwaitBusy(paneID string, timeout time.Duration) (bool, error) {
+	initial, err := x.Capture(paneID)
+	if err != nil {
+		return false, err
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(settlePoll)
+		cur, err := x.Capture(paneID)
+		if err != nil {
+			return false, err
+		}
+		if cur != initial {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // Capture returns the pane's visible output.
 func (x *Tmux) Capture(paneID string) (string, error) {
 	out, err := exec.Command("tmux", "capture-pane", "-p", "-t", paneID).Output()

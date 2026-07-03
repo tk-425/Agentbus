@@ -16,11 +16,11 @@ import (
 // the requester's inbox as exactly one Reply, and the Reply is never injected.
 func TestTracer(t *testing.T) {
 	const (
-		requester    = "codex-1"
-		recipient    = "claude-1"
+		requester     = "codex-1"
+		recipient     = "claude-1"
 		recipientPane = "%1"
-		requestText  = "summarize the spec"
-		captured     = "here is the summary"
+		requestText   = "summarize the spec"
+		captured      = "here is the summary"
 	)
 
 	b := broker.New()
@@ -29,7 +29,6 @@ func TestTracer(t *testing.T) {
 
 	mux := multiplexer.NewMock()
 	mux.SetIdle(recipientPane, true)
-	mux.SetCapture(recipientPane, captured)
 
 	// Requester sends a Request to the recipient.
 	req := message.Message{
@@ -39,6 +38,7 @@ func TestTracer(t *testing.T) {
 		To:   recipient,
 		Body: requestText,
 	}
+	mux.SetCapture(recipientPane, startMarker(req.ID)+"\n"+captured+"\n"+endMarker(req.ID))
 	if err := c.Send(req); err != nil {
 		t.Fatalf("send request: %v", err)
 	}
@@ -64,13 +64,17 @@ func TestTracer(t *testing.T) {
 		t.Errorf("reply ReplyTo: got %q, want %q", reply.ReplyTo, req.ID)
 	}
 
-	// The request text was injected exactly once; the reply text never was.
+	// The request text (with its marker instruction) was injected exactly once;
+	// the reply text never was.
 	injected := mux.Injected(recipientPane)
 	if len(injected) != 1 {
 		t.Fatalf("injection log: got %d entries, want 1 (%v)", len(injected), injected)
 	}
-	if injected[0] != requestText {
-		t.Errorf("injected text: got %q, want %q", injected[0], requestText)
+	if injected[0] != injectionText(req) {
+		t.Errorf("injected text: got %q, want %q", injected[0], injectionText(req))
+	}
+	if !strings.HasPrefix(injected[0], requestText) {
+		t.Errorf("injected text must lead with the request body, got %q", injected[0])
 	}
 	for _, in := range injected {
 		if strings.Contains(in, captured) {

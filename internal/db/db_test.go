@@ -3,8 +3,10 @@ package db_test
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/tk-425/agentbus/internal/db"
+	"github.com/tk-425/agentbus/internal/message"
 	"github.com/tk-425/agentbus/internal/registry"
 )
 
@@ -58,5 +60,37 @@ func TestRegistryRoundTripsThroughSharedLookup(t *testing.T) {
 	r.Unregister("proj-a", name)
 	if _, ok := other.LookupShared("proj-a", name); ok {
 		t.Fatalf("LookupShared should miss after Unregister")
+	}
+}
+
+func TestRecentMessagesReturnsDurableHistoryNewestFirst(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agentbus.db")
+	d, err := db.Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	older := message.Message{ID: "m1", Kind: message.KindRequest, From: "codex-1", To: "claude-1", Body: "first", CreatedAt: time.Unix(10, 0).UTC()}
+	newer := message.Message{ID: "m2", Kind: message.KindReply, From: "claude-1", To: "codex-1", Body: "second", ReplyTo: "m1", CreatedAt: time.Unix(20, 0).UTC()}
+	if err := db.RecordMessage(d, older); err != nil {
+		t.Fatalf("RecordMessage older: %v", err)
+	}
+	if err := db.RecordMessage(d, newer); err != nil {
+		t.Fatalf("RecordMessage newer: %v", err)
+	}
+
+	history, err := db.RecentMessages(d, 20)
+	if err != nil {
+		t.Fatalf("RecentMessages: %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("RecentMessages length = %d, want 2", len(history))
+	}
+	if history[0].ID != "m2" || history[1].ID != "m1" {
+		t.Fatalf("RecentMessages order = %+v, want newest first", history)
 	}
 }

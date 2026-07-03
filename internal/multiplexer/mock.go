@@ -1,32 +1,43 @@
 package multiplexer
 
-import "sync"
+import (
+	"sync"
+	"time"
+)
 
 // Mock is an in-memory Multiplexer for tests. Idle state is settable per pane,
 // every Inject is appended to a per-pane log, and Capture returns a programmable
 // string. It never blocks.
 type Mock struct {
-	mu        sync.Mutex
-	idle      map[string]bool     // paneID -> idle
-	idleAfter map[string]int      // paneID -> IsIdle calls to report busy before flipping to idle
-	idleCalls map[string]int      // paneID -> count of IsIdle calls
-	lastIdle  map[string]bool     // paneID -> idle value the most recent IsIdle returned
-	captures  map[string]string   // paneID -> output Capture returns
-	injected  map[string][]string // paneID -> append-only injection log
-	injIdle   map[string][]bool   // paneID -> idle state observed at each Inject
-	panes     []Pane
+	mu           sync.Mutex
+	idle         map[string]bool     // paneID -> idle
+	idleAfter    map[string]int      // paneID -> IsIdle calls to report busy before flipping to idle
+	idleCalls    map[string]int      // paneID -> count of IsIdle calls
+	lastIdle     map[string]bool     // paneID -> idle value the most recent IsIdle returned
+	captures     map[string]string   // paneID -> output Capture returns
+	captureSeq   map[string][]string // paneID -> sequential outputs Capture returns
+	captureIndex map[string]int      // paneID -> current capture sequence index
+	injected     map[string][]string // paneID -> append-only injection log
+	injIdle      map[string][]bool   // paneID -> idle state observed at each Inject
+	awaitBusy    map[string]bool     // paneID -> result AwaitBusy reports
+	enterPresses map[string]int      // paneID -> count of PressEnter calls
+	panes        []Pane
 }
 
 // NewMock returns an empty Mock.
 func NewMock() *Mock {
 	return &Mock{
-		idle:      map[string]bool{},
-		idleAfter: map[string]int{},
-		idleCalls: map[string]int{},
-		lastIdle:  map[string]bool{},
-		captures:  map[string]string{},
-		injected:  map[string][]string{},
-		injIdle:   map[string][]bool{},
+		idle:         map[string]bool{},
+		idleAfter:    map[string]int{},
+		idleCalls:    map[string]int{},
+		lastIdle:     map[string]bool{},
+		captures:     map[string]string{},
+		captureSeq:   map[string][]string{},
+		captureIndex: map[string]int{},
+		injected:     map[string][]string{},
+		injIdle:      map[string][]bool{},
+		awaitBusy:    map[string]bool{},
+		enterPresses: map[string]int{},
 	}
 }
 
@@ -68,6 +79,20 @@ func (m *Mock) SetCapture(paneID, output string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.captures[paneID] = output
+	delete(m.captureSeq, paneID)
+	delete(m.captureIndex, paneID)
+}
+
+// SetCaptureSequence sets the sequential outputs Capture will return for a pane.
+// Once the sequence is exhausted, Capture keeps returning the final value.
+func (m *Mock) SetCaptureSequence(paneID string, outputs []string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.captureSeq[paneID] = append([]string(nil), outputs...)
+	m.captureIndex[paneID] = 0
+	if len(outputs) > 0 {
+		m.captures[paneID] = outputs[len(outputs)-1]
+	}
 }
 
 // Injected returns a copy of the injection log for a pane.
@@ -94,7 +119,47 @@ func (m *Mock) Inject(paneID, text string) error {
 func (m *Mock) Capture(paneID string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if seq := m.captureSeq[paneID]; len(seq) > 0 {
+		idx := m.captureIndex[paneID]
+		if idx >= len(seq) {
+			return seq[len(seq)-1], nil
+		}
+		m.captureIndex[paneID] = idx + 1
+		return seq[idx], nil
+	}
 	return m.captures[paneID], nil
+}
+
+// SetAwaitBusy sets the result AwaitBusy reports for a pane — true models an
+// agent that visibly accepts the injected Request, false one that never leaves
+// Idle within the grace window.
+func (m *Mock) SetAwaitBusy(paneID string, busy bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.awaitBusy[paneID] = busy
+}
+
+// AwaitBusy reports the programmed transition result immediately; the timeout
+// is ignored so tests never block.
+func (m *Mock) AwaitBusy(paneID string, _ time.Duration) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.awaitBusy[paneID], nil
+}
+
+// PressEnter records a lone Enter keypress for the pane.
+func (m *Mock) PressEnter(paneID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.enterPresses[paneID]++
+	return nil
+}
+
+// EnterPresses returns how many times PressEnter was called for a pane.
+func (m *Mock) EnterPresses(paneID string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.enterPresses[paneID]
 }
 
 // IsIdle reports the pane's idle state. While the call count is within the
@@ -110,6 +175,14 @@ func (m *Mock) IsIdle(paneID string) (bool, error) {
 	}
 	m.lastIdle[paneID] = idle
 	return idle, nil
+}
+
+// SetPanes sets the panes ListPanes will return.
+func (m *Mock) SetPanes(panes []Pane) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.panes = make([]Pane, len(panes))
+	copy(m.panes, panes)
 }
 
 // ListPanes returns the configured panes.

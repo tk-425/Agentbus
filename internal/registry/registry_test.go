@@ -1,7 +1,10 @@
 package registry
 
 import (
+	"path/filepath"
 	"testing"
+
+	"github.com/tk-425/agentbus/internal/db"
 )
 
 // TestResolveByPane: a registered pane resolves back to its Agent instance, and
@@ -95,5 +98,110 @@ func TestAutoSuffix(t *testing.T) {
 	}
 	if second != "claude-2" {
 		t.Errorf("second instance name: got %q, want %q", second, "claude-2")
+	}
+}
+
+func TestListSharedShowsCrossProjectAgentInstances(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "agentbus.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	r := New()
+	r.AttachDB(d, 7373)
+	if _, err := r.RegisterType("proj-a", "claude", "%1"); err != nil {
+		t.Fatalf("RegisterType proj-a: %v", err)
+	}
+	if _, err := r.RegisterType("proj-b", "codex", "%2"); err != nil {
+		t.Fatalf("RegisterType proj-b: %v", err)
+	}
+
+	other := New()
+	other.AttachDB(d, 0)
+	all, err := other.ListShared()
+	if err != nil {
+		t.Fatalf("ListShared: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("ListShared length = %d, want 2", len(all))
+	}
+	if all[0].Project != "proj-a" || all[0].Name != "claude-1" {
+		t.Fatalf("first shared agent = %+v, want proj-a/claude-1", all[0])
+	}
+	if all[1].Project != "proj-b" || all[1].Name != "codex-1" {
+		t.Fatalf("second shared agent = %+v, want proj-b/codex-1", all[1])
+	}
+}
+
+func TestResolveUnregisterTargetRemovesLocalAndQualifiedTargetsExactly(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "agentbus.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	r := New()
+	r.AttachDB(d, 7373)
+	local, err := r.RegisterType("proj-a", "claude", "%1")
+	if err != nil {
+		t.Fatalf("RegisterType local: %v", err)
+	}
+	remote, err := r.RegisterType("proj-b", "claude", "%2")
+	if err != nil {
+		t.Fatalf("RegisterType remote: %v", err)
+	}
+
+	inst, err := r.ResolveUnregisterTarget("proj-a", local)
+	if err != nil {
+		t.Fatalf("ResolveUnregisterTarget local: %v", err)
+	}
+	if inst.Project != "proj-a" || inst.Name != local {
+		t.Fatalf("local target mismatch: %+v", inst)
+	}
+	r.Unregister(inst.Project, inst.Name)
+	if _, ok := r.LookupShared("proj-a", local); ok {
+		t.Fatalf("local target should be removed")
+	}
+	if _, ok := r.LookupShared("proj-b", remote); !ok {
+		t.Fatalf("qualified-unrelated target should remain present")
+	}
+
+	inst, err = r.ResolveUnregisterTarget("proj-a", remote+"@proj-b")
+	if err != nil {
+		t.Fatalf("ResolveUnregisterTarget qualified: %v", err)
+	}
+	if inst.Project != "proj-b" || inst.Name != remote {
+		t.Fatalf("qualified target mismatch: %+v", inst)
+	}
+	r.Unregister(inst.Project, inst.Name)
+	if _, ok := r.LookupShared("proj-b", remote); ok {
+		t.Fatalf("qualified target should be removed")
+	}
+}
+
+func TestResolveUnregisterTargetUnknownReturnsErrUnknownAgent(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "agentbus.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	r := New()
+	r.AttachDB(d, 0)
+	if _, err := r.ResolveUnregisterTarget("proj-a", "ghost-1"); err == nil {
+		t.Fatalf("ResolveUnregisterTarget should fail for unknown local target")
+	}
+	if _, err := r.ResolveUnregisterTarget("proj-a", "ghost-1@proj-b"); err == nil {
+		t.Fatalf("ResolveUnregisterTarget should fail for unknown qualified target")
 	}
 }

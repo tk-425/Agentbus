@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -14,12 +15,14 @@ import (
 	"github.com/tk-425/agentbus/internal/client"
 	"github.com/tk-425/agentbus/internal/db"
 	"github.com/tk-425/agentbus/internal/multiplexer"
+	versionpkg "github.com/tk-425/agentbus/internal/version"
 	"github.com/tk-425/agentbus/internal/watcher"
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "agentbus",
-	Short: "Local multi-agent message bus for AI coding agents",
+	Use:     "agentbus",
+	Short:   "Local multi-agent message bus for AI coding agents",
+	Version: versionpkg.String,
 }
 
 func Execute() {
@@ -77,8 +80,62 @@ func runBroker(cmd *cobra.Command, args []string) error {
 	// reconnect path. The loop uses an in-process Client — no import cycle, since
 	// the watcher/client packages cannot depend on cmd.
 	go superviseWatchers(ctx, b, mux)
+	go autoDiscoverLoop(ctx, projectRoot, b, mux)
 
 	return b.Serve(projectRoot, broker.DefaultPortFile(), mux)
+}
+
+func autoDiscoverLoop(ctx context.Context, projectRoot string, b *broker.Broker, mux multiplexer.Multiplexer) {
+	ticker := time.NewTicker(watcherPoll)
+	defer ticker.Stop()
+	for {
+		if err := autoDiscoverOnce(projectRoot, b, mux); err != nil {
+			fmt.Fprintf(os.Stderr, "auto-discover: %v\n", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func autoDiscoverOnce(projectRoot string, b *broker.Broker, mux multiplexer.Multiplexer) error {
+	defs, err := loadAgentDefinitions()
+	if err != nil {
+		return err
+	}
+	localProject := filepath.Base(projectRoot)
+	panes, err := mux.ListPanes()
+	if err != nil {
+		return err
+	}
+	candidates := discoverCandidates(projectRoot, panes, defs, map[string]bool{})
+	candidateByPane := make(map[string]discoverCandidate, len(candidates))
+	for _, candidate := range candidates {
+		candidateByPane[candidate.PaneID] = candidate
+	}
+
+	for _, inst := range b.Registry.All() {
+		if inst.Project != localProject || inst.PaneID == "" {
+			continue
+		}
+		candidate, ok := candidateByPane[inst.PaneID]
+		if !ok || !strings.HasPrefix(inst.Name, candidate.AgentType+"-") {
+			b.Registry.Unregister(inst.Project, inst.Name)
+		}
+	}
+
+	bound := map[string]bool{}
+	for _, inst := range b.Registry.All() {
+		if inst.Project == localProject && inst.PaneID != "" {
+			bound[inst.PaneID] = true
+		}
+	}
+	_, err = discoverWith(projectRoot, mux, defs, bound, func(agentType, paneID string) (string, error) {
+		return b.Register(localProject, agentType, paneID)
+	})
+	return err
 }
 
 // watcherPoll bounds how often the supervisor scans for newly registered Agent
@@ -147,6 +204,7 @@ func init() {
 		inboxCmd,
 		listCmd,
 		statusCmd,
+		versionCmd,
 		logCmd,
 		discoverCmd,
 		addAgentCmd,
