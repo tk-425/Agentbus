@@ -3,6 +3,7 @@ package multiplexer
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,7 +31,7 @@ func NewTmux() *Tmux {
 // ListPanes enumerates all tmux panes across sessions.
 func (x *Tmux) ListPanes() ([]Pane, error) {
 	out, err := exec.Command(
-		"tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_path}\t#{pane_current_command}",
+		"tmux", "list-panes", "-a", "-F", "#{pane_id}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_pid}",
 	).Output()
 	if err != nil {
 		return nil, fmt.Errorf("tmux list-panes: %w", err)
@@ -40,11 +41,15 @@ func (x *Tmux) ListPanes() ([]Pane, error) {
 		if line == "" {
 			continue
 		}
-		fields := strings.SplitN(line, "\t", 3)
-		if len(fields) != 3 {
+		fields := strings.SplitN(line, "\t", 4)
+		if len(fields) != 4 {
 			continue
 		}
-		panes = append(panes, Pane{ID: fields[0], CWD: fields[1], Command: fields[2]})
+		// pane_pid is the pane's shell; agent discovery walks its subtree when the
+		// pane command is a retitled proctitle. A malformed value leaves PID zero,
+		// which simply skips that fallback.
+		pid, _ := strconv.Atoi(fields[3])
+		panes = append(panes, Pane{ID: fields[0], CWD: fields[1], Command: fields[2], PID: pid})
 	}
 	return panes, nil
 }

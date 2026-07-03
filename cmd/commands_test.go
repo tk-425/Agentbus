@@ -45,6 +45,35 @@ func TestDiscoverCandidatesFiltersByProjectAndMatchesExactCommandBasename(t *tes
 	}
 }
 
+// TestDiscoverCandidatesResolvesAgentFromProcessTreeWhenCommandIsRetitled
+// reproduces the tmux discovery bug: claude retitles its process to its version
+// ("2.1.193"), so the pane's surface command matches no agent type, yet the real
+// `claude` process is a direct child of the pane shell. Discovery must fall back
+// to the process subtree and register claude, ignoring the npm/MCP grandchildren.
+func TestDiscoverCandidatesResolvesAgentFromProcessTreeWhenCommandIsRetitled(t *testing.T) {
+	restore := listProcesses
+	defer func() { listProcesses = restore }()
+	// Captured from a live tmux session: shell 90352 -> claude 92080 -> npm 92149.
+	listProcesses = func() ([]procEntry, error) {
+		return []procEntry{
+			{pid: 90352, ppid: 88065, comm: "zsh"},
+			{pid: 92080, ppid: 90352, comm: "claude"},
+			{pid: 92149, ppid: 92080, comm: "npm exec tavily-"},
+		}, nil
+	}
+
+	defs := map[string]agenttypes.Definition{"claude": {ResponseWait: 2}}
+	panes := []multiplexer.Pane{{ID: "%1", CWD: "/repo", Command: "2.1.193", PID: 90352}}
+
+	got := discoverCandidates("/repo", panes, defs, map[string]bool{})
+	if len(got) != 1 {
+		t.Fatalf("discoverCandidates length = %d, want 1", len(got))
+	}
+	if got[0].PaneID != "%1" || got[0].AgentType != "claude" {
+		t.Fatalf("candidate = %+v, want %%1/claude", got[0])
+	}
+}
+
 func TestDiscoverCandidatesSkipsAlreadyBoundPanesOnRerun(t *testing.T) {
 	defs := map[string]agenttypes.Definition{
 		"claude": {ResponseWait: 2},

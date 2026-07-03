@@ -10,6 +10,11 @@ type Pane struct {
 	ID      string
 	CWD     string
 	Command string
+	// PID is the pane's top process (the shell), used to resolve an agent's
+	// real command from its process subtree when Command is a retitled proctitle
+	// (tmux only). Backends that identify agents by their own metadata (herdr)
+	// leave this zero.
+	PID int
 }
 
 // Multiplexer is the backend contract used by the Watcher. Real herdr/tmux

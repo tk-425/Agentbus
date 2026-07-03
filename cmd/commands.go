@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -556,17 +557,87 @@ func discoverWith(projectRoot string, mux multiplexer.Multiplexer, defs map[stri
 
 func discoverCandidates(projectRoot string, panes []multiplexer.Pane, defs map[string]agenttypes.Definition, bound map[string]bool) []discoverCandidate {
 	out := make([]discoverCandidate, 0, len(panes))
+	var procs []procEntry
+	procsLoaded := false
 	for _, pane := range panes {
 		if bound[pane.ID] || !paneInProject(projectRoot, pane.CWD) {
 			continue
 		}
 		agentType := normalizeCommandBasename(pane.Command)
 		if _, ok := defs[agentType]; !ok {
-			continue
+			// The surface command matched no agent type. Under tmux this happens
+			// when the agent retitles its process (e.g. claude -> "2.1.193"), so
+			// fall back to the pane's process subtree to find the real agent.
+			if pane.PID == 0 {
+				continue
+			}
+			if !procsLoaded {
+				procs, _ = listProcesses()
+				procsLoaded = true
+			}
+			agentType = agentTypeInTree(pane.PID, defs, procs)
+			if agentType == "" {
+				continue
+			}
 		}
 		out = append(out, discoverCandidate{PaneID: pane.ID, AgentType: agentType})
 	}
 	return out
+}
+
+// procEntry is one row of the process table used to resolve an agent from a
+// pane's process subtree.
+type procEntry struct {
+	pid, ppid int
+	comm      string
+}
+
+// listProcesses returns the current process table. Overridable in tests.
+var listProcesses = psProcesses
+
+// psProcesses reads the process table via ps as (pid, ppid, command name).
+func psProcesses() ([]procEntry, error) {
+	out, err := exec.Command("ps", "-axo", "pid=,ppid=,comm=").Output()
+	if err != nil {
+		return nil, fmt.Errorf("ps: %w", err)
+	}
+	var procs []procEntry
+	for line := range strings.SplitSeq(strings.TrimRight(string(out), "\n"), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, errPID := strconv.Atoi(fields[0])
+		ppid, errPPID := strconv.Atoi(fields[1])
+		if errPID != nil || errPPID != nil {
+			continue
+		}
+		procs = append(procs, procEntry{pid: pid, ppid: ppid, comm: strings.Join(fields[2:], " ")})
+	}
+	return procs, nil
+}
+
+// agentTypeInTree walks the descendants of rootPID breadth-first and returns the
+// first process whose command matches a known agent type, or "". Breadth-first
+// order matches the pane's direct child (the agent) before its npm/MCP
+// grandchildren.
+func agentTypeInTree(rootPID int, defs map[string]agenttypes.Definition, procs []procEntry) string {
+	children := make(map[int][]procEntry)
+	for _, p := range procs {
+		children[p.ppid] = append(children[p.ppid], p)
+	}
+	queue := append([]procEntry(nil), children[rootPID]...)
+	for len(queue) > 0 {
+		p := queue[0]
+		queue = queue[1:]
+		if agentType := normalizeCommandBasename(p.comm); agentType != "" {
+			if _, ok := defs[agentType]; ok {
+				return agentType
+			}
+		}
+		queue = append(queue, children[p.pid]...)
+	}
+	return ""
 }
 
 func paneInProject(projectRoot, cwd string) bool {
