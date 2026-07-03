@@ -200,6 +200,7 @@ func init() {
 		stopCmd,
 		registerCmd,
 		unregisterCmd,
+		whoamiCmd,
 		sendCmd,
 		inboxCmd,
 		listCmd,
