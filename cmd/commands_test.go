@@ -407,6 +407,29 @@ func TestRunStartIsNoOpWhenBrokerAlreadyRunning(t *testing.T) {
 	}
 }
 
+// TestResolvePaneIDReadsHerdrPaneID guards the regression where resolvePaneID
+// read the nonexistent HERDR_PANE instead of the HERDR_PANE_ID herdr actually
+// exports, leaving whoami/register unable to identify a pane under herdr.
+func TestResolvePaneIDReadsHerdrPaneID(t *testing.T) {
+	t.Setenv("TMUX_PANE", "")
+	t.Setenv("HERDR_PANE", "")
+	t.Setenv("HERDR_PANE_ID", "w6:p1")
+	if got := resolvePaneID(""); got != "w6:p1" {
+		t.Fatalf("resolvePaneID() = %q, want w6:p1 (from HERDR_PANE_ID)", got)
+	}
+
+	// Explicit --pane always wins over the environment.
+	if got := resolvePaneID("explicit:pane"); got != "explicit:pane" {
+		t.Fatalf("resolvePaneID(explicit) = %q, want explicit:pane", got)
+	}
+
+	// TMUX_PANE takes precedence when set (tmux backend).
+	t.Setenv("TMUX_PANE", "%7")
+	if got := resolvePaneID(""); got != "%7" {
+		t.Fatalf("resolvePaneID() = %q, want %%7 (from TMUX_PANE)", got)
+	}
+}
+
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	old := os.Stdout

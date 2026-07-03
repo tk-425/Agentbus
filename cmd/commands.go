@@ -180,12 +180,17 @@ func runRegister(cmd *cobra.Command, args []string) error {
 }
 
 // resolvePaneID picks the pane the command runs in: an explicit --pane wins,
-// then the multiplexer's own environment (TMUX_PANE / HERDR_PANE).
+// then the multiplexer's own environment. herdr exports the current pane as
+// HERDR_PANE_ID (e.g. w6:p1), matching the pane_id discovery stores; HERDR_PANE
+// is kept only as a legacy fallback.
 func resolvePaneID(explicit string) string {
 	if explicit != "" {
 		return explicit
 	}
 	if pane := os.Getenv("TMUX_PANE"); pane != "" {
+		return pane
+	}
+	if pane := os.Getenv("HERDR_PANE_ID"); pane != "" {
 		return pane
 	}
 	return os.Getenv("HERDR_PANE")
