@@ -76,8 +76,10 @@ agentbus inbox --name claude-2 --wait --timeout 120s
 A request from another agent arrives as ordinary text injected into this pane,
 followed by an instruction like:
 
-> …print it wrapped between two lines — one containing only
-> `<<AGENTBUS_REPLY abc123>>` and one containing only `<<AGENTBUS_END abc123>>`
+> …print exactly three parts in this order: (1) a line containing only
+> `<<AGENTBUS_REPLY abc123>>`, (2) the full reply body to send back, and
+> (3) a line containing only `<<AGENTBUS_END abc123>>`. Only the text between
+> those two marker lines is returned to the sender.
 
 Follow that instruction literally. Do the work, then print the final answer
 between exactly those two marker lines:

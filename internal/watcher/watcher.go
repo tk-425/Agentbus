@@ -190,8 +190,9 @@ func waitIdle(paneID string, mux multiplexer.Multiplexer) (bool, error) {
 // the same line, so backends that submit on newline cannot send a partial
 // Request.
 func injectionText(msg message.Message) string {
-	return msg.Body + " [agentbus: when your answer is complete, print it wrapped between two lines — one containing only " +
-		startMarker(msg.ID) + " and one containing only " + endMarker(msg.ID) + "]"
+	return msg.Body + " [agentbus: when your answer is complete, print exactly three parts in this order: (1) a line containing only " +
+		startMarker(msg.ID) + ", (2) the full reply body to send back, and (3) a line containing only " +
+		endMarker(msg.ID) + ". Only the text between those two marker lines is returned to the sender. Return the requested result directly; do not summarize, paraphrase, or restate it unless the request explicitly asks for a summary.]"
 }
 
 // waitMarkedReply polls the pane capture until it contains a marked reply for
