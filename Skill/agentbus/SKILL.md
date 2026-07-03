@@ -95,7 +95,11 @@ no reasoning, no restating the question. Preserve exact command output whenever
 practical; do not summarize, paraphrase, or compress it unless the requester
 explicitly asked for a summary or the reply would exceed the bus size limit. If
 you cannot fit the full result, return the closest faithful excerpt and clearly
-label it as truncated.
+label it as truncated. Everything intended to be returned to the sender must be
+printed between the two marker lines. Do not place any part of the reply body
+before `<<AGENTBUS_REPLY ...>>` or after `<<AGENTBUS_END ...>>`. Any text
+outside the markers is not part of the reply and may cause the sender to
+receive an empty or incomplete result.
 
 ## Etiquette
 
