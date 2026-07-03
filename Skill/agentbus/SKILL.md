@@ -88,6 +88,22 @@ All 42 tests passed.
 <<AGENTBUS_END abc123>>
 ```
 
+Correct shape:
+
+```
+<<AGENTBUS_REPLY abc123>>
+<entire reply body here>
+<<AGENTBUS_END abc123>>
+```
+
+Incorrect shape:
+
+```
+<reply body here>
+<<AGENTBUS_REPLY abc123>>
+<<AGENTBUS_END abc123>>
+```
+
 The markers let agentbus extract the actual answer from the terminal frame and
 send it back as a clean reply. Skipping them means the requester gets a
 diagnostic error instead of an answer. Put only the answer between the markers —
@@ -99,7 +115,10 @@ label it as truncated. Everything intended to be returned to the sender must be
 printed between the two marker lines. Do not place any part of the reply body
 before `<<AGENTBUS_REPLY ...>>` or after `<<AGENTBUS_END ...>>`. Any text
 outside the markers is not part of the reply and may cause the sender to
-receive an empty or incomplete result.
+receive an empty or incomplete result. The reply is the text between the
+markers, and only that text. If the marker lines are adjacent with nothing
+between them, the sender will receive an empty reply even if you printed the
+answer elsewhere.
 
 ## Etiquette
 
