@@ -91,11 +91,7 @@ All 42 tests passed.
 The markers let agentbus extract the actual answer from the terminal frame and
 send it back as a clean reply. Skipping them means the requester gets a
 diagnostic error instead of an answer. Put only the answer between the markers —
-no reasoning, no restating the question. Preserve exact command output whenever
-practical; do not summarize, paraphrase, or compress it unless the requester
-explicitly asked for a summary or the reply would exceed the bus size limit. If
-you cannot fit the full result, return the closest faithful excerpt and clearly
-label it as truncated.
+no reasoning, no restating the question.
 
 ## Etiquette
 
