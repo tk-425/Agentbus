@@ -1,6 +1,6 @@
 # agentbus
 
-**Version:** v0.2.0
+**Version:** v0.3.0
 
 A local multi-agent message bus that lets any running AI coding agent send and receive
 messages from any other running agent in real time, via tmux and a local broker.
@@ -82,6 +82,7 @@ All runtime state lives in `~/.agentbus/`:
 - `agentbus start` is idempotent: a second start in the same project reports the live broker instead of launching another
 - Watchers auto-reconnect on broker restart (retry every 2s, up to 30s)
 - `agentbus inbox` returns immediately by default; `--wait` blocks for scripted use
+- Reply arrival is announced by injecting a one-time notification into the requester's pane when idle; reply bodies are never injected — agents read them via `agentbus inbox`
 - Message responses hard-truncated at 32KB; agents should pass file paths for large content
 - Instance names are never reused within a broker session
 - Natural language skill is distributed separately from the binary

@@ -8,6 +8,7 @@
 package watcher
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -121,7 +122,51 @@ func Watch(agent, paneID string, mux multiplexer.Multiplexer, c *client.Client) 
 			return err
 		}
 	}
+	return notifyReplies(agent, paneID, mux, c)
+}
+
+// notifyReplies announces newly arrived Replies (ADR-0002): while the pane is
+// Idle it injects a short notification naming the senders and the inbox read
+// command. The Reply bodies are never injected and stay queued until read; a
+// pane that never goes Idle this pass leaves the Replies unnotified for the
+// next pass.
+func notifyReplies(agent, paneID string, mux multiplexer.Multiplexer, c *client.Client) error {
+	replies := c.UnnotifiedReplies(agent)
+	if len(replies) == 0 {
+		return nil
+	}
+	idle, err := waitIdle(paneID, mux)
+	if err != nil || !idle {
+		return err
+	}
+	if err := mux.Inject(paneID, notificationText(agent, replies)); err != nil {
+		return err
+	}
+	ids := make([]string, len(replies))
+	for i, msg := range replies {
+		ids[i] = msg.ID
+	}
+	c.MarkNotified(ids)
 	return nil
+}
+
+// notificationText carries only provenance and the read command — injected
+// content is executed by the agent, so no Reply body may appear in it.
+func notificationText(agent string, replies []message.Message) string {
+	senders := make([]string, 0, len(replies))
+	seen := map[string]bool{}
+	for _, msg := range replies {
+		if !seen[msg.From] {
+			seen[msg.From] = true
+			senders = append(senders, msg.From)
+		}
+	}
+	label := "new reply"
+	if len(replies) > 1 {
+		label = fmt.Sprintf("%d new replies", len(replies))
+	}
+	return "[agentbus] " + label + " from " + strings.Join(senders, ", ") +
+		" — run: agentbus inbox --name " + agent
 }
 
 // waitIdle polls the pane's idle state up to a bounded number of attempts,

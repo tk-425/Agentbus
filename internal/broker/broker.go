@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -64,11 +65,13 @@ func (b *Broker) Register(project, agentType, paneID string) (string, error) {
 
 // Send enqueues msg for its To recipient, truncating an over-cap body once.
 // When a shared DB is attached, the same boundary also records durable
-// Request/Reply history before the queue is mutated.
+// Request/Reply history. History is best-effort: a failed write only degrades
+// `log` completeness and must never block live delivery, since the inbox is the
+// live surface and durable history is a separate concern (spec Key Decisions).
 func (b *Broker) Send(msg message.Message) error {
 	msg.Body = truncate(msg.Body)
 	if err := db.RecordMessage(b.db, msg); err != nil {
-		return err
+		log.Printf("agentbus: record message %s history: %v", msg.ID, err)
 	}
 	b.queue.Enqueue(msg)
 	return nil
@@ -176,4 +179,16 @@ func (b *Broker) Inbox(agent string) []message.Message {
 // terminal inbox-only Replies available for a human inbox read.
 func (b *Broker) Requests(agent string) []message.Message {
 	return b.queue.DrainRequests(agent)
+}
+
+// UnnotifiedReplies returns queued Replies for agent whose arrival has not yet
+// been announced, without draining them (ADR-0002).
+func (b *Broker) UnnotifiedReplies(agent string) []message.Message {
+	return b.queue.UnnotifiedReplies(agent)
+}
+
+// MarkNotified records that arrival notifications for these message IDs were
+// injected.
+func (b *Broker) MarkNotified(ids []string) {
+	b.queue.MarkNotified(ids)
 }

@@ -1,6 +1,7 @@
 package broker
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -137,7 +138,7 @@ func TestServeShutdownRemovesProjectAgentsFromSharedRegistry(t *testing.T) {
 		t.Fatalf("agent count before shutdown = %d, want 1", before)
 	}
 
-	if err := b.Shutdown(nil); err != nil {
+	if err := b.Shutdown(context.TODO()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
 	}
 	if err := <-errCh; err != nil {

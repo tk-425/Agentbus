@@ -36,9 +36,10 @@ func setup(t *testing.T) (*client.Client, *multiplexer.Mock) {
 	return c, mux
 }
 
-// TestReplyNeverInjected: a Reply sitting in the watched agent's inbox is never
-// injected into its pane — replies are terminal and inbox-only (ADR-0001).
-func TestReplyNeverInjected(t *testing.T) {
+// TestReplyBodyNeverInjected: a Reply sitting in the watched agent's inbox
+// triggers only an arrival notification (ADR-0002) — the Reply body itself is
+// never injected into the pane (ADR-0001), and the Reply stays inbox-readable.
+func TestReplyBodyNeverInjected(t *testing.T) {
 	c, mux := setup(t)
 	mux.SetIdle(watchPane, true)
 
@@ -48,8 +49,82 @@ func TestReplyNeverInjected(t *testing.T) {
 		t.Fatalf("watch: %v", err)
 	}
 
+	injected := mux.Injected(watchPane)
+	if len(injected) != 1 {
+		t.Fatalf("injection count: got %d, want 1 notification (%v)", len(injected), injected)
+	}
+	if strings.Contains(injected[0], "a reply body") {
+		t.Fatalf("reply body was injected: %q", injected[0])
+	}
+	if !strings.Contains(injected[0], "[agentbus]") || !strings.Contains(injected[0], requester) ||
+		!strings.Contains(injected[0], "agentbus inbox --name "+watchAgent) {
+		t.Fatalf("notification missing provenance or read command: %q", injected[0])
+	}
+	if got := c.Inbox(watchAgent); len(got) != 1 || got[0].Body != "a reply body" {
+		t.Fatalf("reply must remain inbox-readable after notification: %v", got)
+	}
+}
+
+// TestReplyNotificationInjectedOnce: a second watcher pass must not re-announce
+// an already-notified Reply.
+func TestReplyNotificationInjectedOnce(t *testing.T) {
+	c, mux := setup(t)
+	mux.SetIdle(watchPane, true)
+
+	c.Send(message.Message{ID: message.NewID(), Kind: message.KindReply, From: requester, To: watchAgent, Body: "a reply body"})
+
+	for range 2 {
+		if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+	}
+
+	if got := mux.Injected(watchPane); len(got) != 1 {
+		t.Fatalf("injection count after two passes: got %d, want 1 (%v)", len(got), got)
+	}
+}
+
+// TestReplyNotificationDeferredUntilIdle: a pane that never goes Idle receives
+// no notification this pass, and the Reply stays pending so the next pass (with
+// an Idle pane) announces it.
+func TestReplyNotificationDeferredUntilIdle(t *testing.T) {
+	c, mux := setup(t)
+	// Pane stays busy: no notification may be injected.
+
+	c.Send(message.Message{ID: message.NewID(), Kind: message.KindReply, From: requester, To: watchAgent, Body: "a reply body"})
+
+	if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+		t.Fatalf("busy watch: %v", err)
+	}
 	if got := mux.Injected(watchPane); len(got) != 0 {
-		t.Fatalf("reply was injected: %v", got)
+		t.Fatalf("notification injected into busy pane: %v", got)
+	}
+
+	mux.SetIdle(watchPane, true)
+	if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+		t.Fatalf("idle watch: %v", err)
+	}
+	if got := mux.Injected(watchPane); len(got) != 1 {
+		t.Fatalf("deferred notification: got %d injections, want 1 (%v)", len(got), got)
+	}
+}
+
+// TestNoNotificationForDrainedReply: a Reply read from the inbox before the
+// watcher pass is gone — nothing to announce.
+func TestNoNotificationForDrainedReply(t *testing.T) {
+	c, mux := setup(t)
+	mux.SetIdle(watchPane, true)
+
+	c.Send(message.Message{ID: message.NewID(), Kind: message.KindReply, From: requester, To: watchAgent, Body: "a reply body"})
+	if got := c.Inbox(watchAgent); len(got) != 1 {
+		t.Fatalf("inbox drain: %v", got)
+	}
+
+	if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if got := mux.Injected(watchPane); len(got) != 0 {
+		t.Fatalf("notification injected for drained reply: %v", got)
 	}
 }
 
@@ -215,8 +290,10 @@ func TestRequesterWatcherDoesNotDrainReplies(t *testing.T) {
 	if inbox[0].Kind != message.KindReply || inbox[0].Body != "pong from claude" || inbox[0].ReplyTo != req.ID {
 		t.Fatalf("unexpected requester reply: %+v", inbox[0])
 	}
-	if got := mux.Injected(requesterPane); len(got) != 0 {
-		t.Fatalf("requester watcher injected a terminal reply: %v", got)
+	for _, in := range mux.Injected(requesterPane) {
+		if strings.Contains(in, "pong from claude") {
+			t.Fatalf("requester watcher injected the reply body: %q", in)
+		}
 	}
 }
 
@@ -360,8 +437,8 @@ func TestNoEnterRetryWhenAgentAcceptsRequest(t *testing.T) {
 	}
 }
 
-// TestReplyProducesNothingFurther: feeding a Reply to the watcher causes no
-// injection and no new message anywhere — a Reply is terminal.
+// TestReplyProducesNothingFurther: a Reply is terminal — beyond its one-time
+// arrival notification it causes no body injection and no new message anywhere.
 func TestReplyProducesNothingFurther(t *testing.T) {
 	c, mux := setup(t)
 	mux.SetIdle(watchPane, true)
@@ -372,8 +449,10 @@ func TestReplyProducesNothingFurther(t *testing.T) {
 		t.Fatalf("watch: %v", err)
 	}
 
-	if got := mux.Injected(watchPane); len(got) != 0 {
-		t.Errorf("reply caused an injection: %v", got)
+	for _, in := range mux.Injected(watchPane) {
+		if strings.Contains(in, "terminal reply") {
+			t.Errorf("reply body was injected: %q", in)
+		}
 	}
 	if got := c.Inbox(requester); len(got) != 0 {
 		t.Errorf("reply produced a new message for the requester: %v", got)

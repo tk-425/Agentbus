@@ -527,7 +527,7 @@ func paneInProject(projectRoot, cwd string) bool {
 	if err != nil {
 		return false
 	}
-	return rel == "." || (!strings.HasPrefix(rel, "..") && rel != "..")
+	return rel == "." || !strings.HasPrefix(rel, "..")
 }
 
 func normalizeCommandBasename(command string) string {
