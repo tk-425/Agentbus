@@ -110,6 +110,21 @@ func (c *Client) Inbox(agent string) []message.Message {
 	return msgs
 }
 
+// Requests drains only Request messages for agent. The watcher uses this path
+// so terminal Replies remain available for a human inbox read.
+func (c *Client) Requests(agent string) []message.Message {
+	if c.broker != nil {
+		return c.broker.Requests(agent)
+	}
+	var requests []message.Message
+	for _, msg := range c.Inbox(agent) {
+		if msg.Kind == message.KindRequest {
+			requests = append(requests, msg)
+		}
+	}
+	return requests
+}
+
 // Ack acknowledges a delivered message by id for agent.
 func (c *Client) Ack(agent, id string) error {
 	if c.broker != nil {

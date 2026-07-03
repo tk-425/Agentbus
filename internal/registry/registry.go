@@ -190,6 +190,54 @@ func (r *Registry) LookupShared(project, name string) (Instance, bool) {
 	return inst, true
 }
 
+// ListShared returns all registered Agent instances from the shared registry,
+// ordered deterministically by project then name.
+func (r *Registry) ListShared() ([]Instance, error) {
+	r.mu.Lock()
+	db := r.db
+	r.mu.Unlock()
+	if db == nil {
+		return nil, nil
+	}
+	rows, err := db.Query(`
+		SELECT project, name, broker_port, pane_id
+		FROM agents
+		ORDER BY project, name
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list shared agents: %w", err)
+	}
+	defer rows.Close()
+
+	var out []Instance
+	for rows.Next() {
+		var inst Instance
+		if err := rows.Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID); err != nil {
+			return nil, fmt.Errorf("scan shared agent: %w", err)
+		}
+		out = append(out, inst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate shared agents: %w", err)
+	}
+	return out, nil
+}
+
+// ResolveUnregisterTarget resolves an exact Agent instance removal target. A
+// bare name means the local project; name@project targets that project
+// explicitly. Unknown targets return ErrUnknownAgent.
+func (r *Registry) ResolveUnregisterTarget(localProject, target string) (Instance, error) {
+	name, project, addressed := strings.Cut(target, "@")
+	if !addressed {
+		project = localProject
+	}
+	inst, ok := r.LookupShared(project, name)
+	if !ok {
+		return Instance{}, fmt.Errorf("%w: %q", ErrUnknownAgent, target)
+	}
+	return inst, nil
+}
+
 // lookupSharedByName resolves a bare Agent instance name through the shared
 // agents table when it is absent locally. Ordered by project for determinism
 // when the same instance name exists in several projects.

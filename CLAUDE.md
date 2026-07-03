@@ -48,7 +48,7 @@ agentbus start                        # start broker in background (auto-discove
 agentbus stop                         # stop broker
 agentbus register --name <agent>      # register current tmux pane (auto-suffixes if name taken)
 agentbus unregister --name <agent>    # remove agent from registry
-agentbus send --to <agent> <message>  # send message to agent
+agentbus send --from <agent> --to <agent> <message>  # send message (replies route back to --from)
 agentbus inbox [--wait] [--timeout]   # read inbox (marks as read; --wait blocks until message arrives)
 agentbus list                         # list registered agents
 agentbus status                       # show statusline data
@@ -78,7 +78,8 @@ All runtime state lives in `~/.agentbus/`:
 ## Key Decisions
 
 - Broker runs on a dynamic port (starting at 7373); port written to `~/.agentbus/port`
-- `agentbus start` always runs auto-discovery; use `--no-discover` to skip
+- `agentbus start` runs continuous auto-discovery (immediately on startup, then reconciling on an interval)
+- `agentbus start` is idempotent: a second start in the same project reports the live broker instead of launching another
 - Watchers auto-reconnect on broker restart (retry every 2s, up to 30s)
 - `agentbus inbox` returns immediately by default; `--wait` blocks for scripted use
 - Message responses hard-truncated at 32KB; agents should pass file paths for large content

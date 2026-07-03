@@ -36,4 +36,34 @@ func (q *Queue) Drain(agent string) []message.Message {
 	return msgs
 }
 
+// DrainRequests returns and removes only Request messages queued for agent,
+// preserving the FIFO order of both the returned Requests and any retained
+// non-Request messages.
+func (q *Queue) DrainRequests(agent string) []message.Message {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	msgs := q.byTo[agent]
+	if len(msgs) == 0 {
+		return nil
+	}
+
+	requests := make([]message.Message, 0, len(msgs))
+	kept := make([]message.Message, 0, len(msgs))
+	for _, msg := range msgs {
+		if msg.Kind == message.KindRequest {
+			requests = append(requests, msg)
+			continue
+		}
+		kept = append(kept, msg)
+	}
+
+	if len(kept) == 0 {
+		delete(q.byTo, agent)
+	} else {
+		q.byTo[agent] = kept
+	}
+	return requests
+}
+
 

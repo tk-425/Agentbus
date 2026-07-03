@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/tk-425/agentbus/internal/db"
 	"github.com/tk-425/agentbus/internal/message"
 	"github.com/tk-425/agentbus/internal/multiplexer"
 	"github.com/tk-425/agentbus/internal/registry"
@@ -62,8 +63,13 @@ func (b *Broker) Register(project, agentType, paneID string) (string, error) {
 }
 
 // Send enqueues msg for its To recipient, truncating an over-cap body once.
+// When a shared DB is attached, the same boundary also records durable
+// Request/Reply history before the queue is mutated.
 func (b *Broker) Send(msg message.Message) error {
 	msg.Body = truncate(msg.Body)
+	if err := db.RecordMessage(b.db, msg); err != nil {
+		return err
+	}
 	b.queue.Enqueue(msg)
 	return nil
 }
@@ -107,6 +113,8 @@ func (b *Broker) Serve(projectRoot, portFile string, mux multiplexer.Multiplexer
 			ON CONFLICT(project_root) DO UPDATE SET
 				port = excluded.port, multiplexer = excluded.multiplexer, pid = excluded.pid`,
 			projectRoot, port, fmt.Sprintf("%T", mux), os.Getpid())
+		projectName := filepath.Base(projectRoot)
+		defer b.db.Exec(`DELETE FROM agents WHERE project = ?`, projectName)
 		defer b.db.Exec(`DELETE FROM brokers WHERE project_root = ?`, projectRoot)
 	}
 
@@ -162,4 +170,10 @@ func truncate(body string) string {
 // Inbox drains and returns all messages queued for agent.
 func (b *Broker) Inbox(agent string) []message.Message {
 	return b.queue.Drain(agent)
+}
+
+// Requests drains and returns only Request messages queued for agent, leaving
+// terminal inbox-only Replies available for a human inbox read.
+func (b *Broker) Requests(agent string) []message.Message {
+	return b.queue.DrainRequests(agent)
 }

@@ -2,11 +2,13 @@ package broker_test
 
 import (
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/tk-425/agentbus/internal/broker"
 	"github.com/tk-425/agentbus/internal/client"
+	"github.com/tk-425/agentbus/internal/db"
 	"github.com/tk-425/agentbus/internal/message"
 )
 
@@ -77,5 +79,49 @@ func TestHTTPSendTruncatesOnce(t *testing.T) {
 	}
 	if strings.Count(out, "[truncated") != 1 {
 		t.Fatalf("HTTP path must truncate exactly once via Broker.Send, got %d markers", strings.Count(out, "[truncated"))
+	}
+}
+
+func TestHTTPInboxDrainLeavesDurableHistoryQueryable(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "agentbus.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	b := broker.New()
+	b.AttachDB(d)
+	b.Registry.SetLocalProject("proj-a")
+	srv := httptest.NewServer(b.Handler())
+	t.Cleanup(srv.Close)
+	c := client.NewRemote(srv.URL)
+
+	name, err := c.Register("proj-a", "claude", "%1")
+	if err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	msg := message.Message{ID: "m-durable", Kind: message.KindRequest, From: "codex-1", To: name, Body: "persist me"}
+	if err := c.Send(msg); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if got := c.Inbox(name); len(got) != 1 {
+		t.Fatalf("Inbox length = %d, want 1", len(got))
+	}
+	if rest := c.Inbox(name); len(rest) != 0 {
+		t.Fatalf("Inbox should be drained, got %d", len(rest))
+	}
+
+	history, err := db.RecentMessages(d, 20)
+	if err != nil {
+		t.Fatalf("RecentMessages: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("RecentMessages length = %d, want 1", len(history))
+	}
+	if history[0].ID != msg.ID || history[0].Body != "persist me" || history[0].To != name {
+		t.Fatalf("durable history mismatch: %+v", history[0])
 	}
 }

@@ -1,0 +1,2 @@
+agentbus start should run agentbus discover at the end so that can discover agents.
+agentbus start should not run twice once its running.

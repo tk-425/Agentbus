@@ -3,6 +3,8 @@
 // and detect when an Agent instance is Idle.
 package multiplexer
 
+import "time"
+
 // Pane describes a single multiplexer pane discovered on the system.
 type Pane struct {
 	ID      string
@@ -19,6 +21,13 @@ type Multiplexer interface {
 	Capture(paneID string) (string, error)
 	// IsIdle reports whether the pane's agent is not mid-task.
 	IsIdle(paneID string) (bool, error)
+	// AwaitBusy blocks until the pane's agent leaves Idle — the signal that an
+	// injected Request was actually accepted — or until timeout elapses. A
+	// false return means the transition was never observed.
+	AwaitBusy(paneID string, timeout time.Duration) (bool, error)
+	// PressEnter sends a lone Enter keypress, used to retry Request submission
+	// when the agent never left Idle after an Inject.
+	PressEnter(paneID string) error
 	// ListPanes enumerates the panes known to the backend.
 	ListPanes() ([]Pane, error)
 }
