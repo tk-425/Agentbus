@@ -74,7 +74,9 @@ sequenceDiagram
 ## Requirements
 
 - [tmux](https://github.com/tmux/tmux) **or** [herdr](https://github.com/tk-425/herdr)
-  (auto-detected via `HERDR_ENV=1` or `herdr` on `PATH`)
+  (the backend is selected from the current pane's runtime environment — tmux
+  inside a tmux pane, herdr inside a herdr pane; agentbus exits with an actionable
+  message when run outside both)
 - Go 1.26+ (to build from source)
 
 ---

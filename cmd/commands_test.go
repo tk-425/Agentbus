@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -404,6 +405,39 @@ func TestRunStartIsNoOpWhenBrokerAlreadyRunning(t *testing.T) {
 	want := fmt.Sprintf("broker already running (pid %d, port 7373)", os.Getpid())
 	if strings.TrimSpace(out) != want {
 		t.Fatalf("start output = %q, want %q", strings.TrimSpace(out), want)
+	}
+}
+
+// TestRunStartAbortsWithoutMultiplexer asserts that foreground start fails with
+// the no-multiplexer error and launches no broker when the current environment is
+// neither tmux nor herdr — detection happens before any broker subprocess spawns,
+// so no port file is written.
+func TestRunStartAbortsWithoutMultiplexer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Neither multiplexer signal present: detection must fail.
+	t.Setenv("TMUX", "")
+	t.Setenv("HERDR_ENV", "")
+
+	projectRoot := filepath.Join(home, "repo")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	err = runStart(&cobra.Command{}, nil)
+	if !errors.Is(err, multiplexer.ErrNoMultiplexer) {
+		t.Fatalf("runStart error = %v, want ErrNoMultiplexer", err)
+	}
+	if _, statErr := os.Stat(broker.DefaultPortFile()); !os.IsNotExist(statErr) {
+		t.Fatalf("port file exists after aborted start: stat err = %v, want not-exist", statErr)
 	}
 }
 

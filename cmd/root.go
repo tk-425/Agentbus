@@ -73,7 +73,10 @@ func runBroker(cmd *cobra.Command, args []string) error {
 		b.Shutdown(shutdownCtx)
 	}()
 
-	mux := multiplexer.Detect()
+	mux, err := multiplexer.Detect()
+	if err != nil {
+		return err
+	}
 	// Run per-agent Watcher loops inside the broker process: each injects queued
 	// Requests into its registered pane and returns Replies. Watchers live and
 	// die with the broker (they respawn on restart), so there is no separate

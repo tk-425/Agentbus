@@ -67,6 +67,13 @@ func runStart(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Select the backend from the runtime environment before spawning the broker,
+	// so an unsupported environment fails here with an actionable message rather
+	// than as a silent broker-did-not-start symptom pointing at a log.
+	if _, err := multiplexer.Detect(); err != nil {
+		return err
+	}
+
 	exe, err := os.Executable()
 	if err != nil {
 		return err
@@ -503,11 +510,16 @@ func runDiscover(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	mux, err := multiplexer.Detect()
+	if err != nil {
+		return err
+	}
+
 	c, err := client.Dial(broker.DefaultPortFile())
 	if err != nil {
 		return fmt.Errorf("no running broker (run `agentbus start`): %w", err)
 	}
-	created, err := discoverWith(projectRoot, multiplexer.Detect(), defs, bound, func(agentType, paneID string) (string, error) {
+	created, err := discoverWith(projectRoot, mux, defs, bound, func(agentType, paneID string) (string, error) {
 		return c.Register(localProject, agentType, paneID)
 	})
 	if err != nil {
