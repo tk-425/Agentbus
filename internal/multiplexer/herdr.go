@@ -125,15 +125,6 @@ func (h *Herdr) AwaitBusy(paneID string, timeout time.Duration) (bool, error) {
 	return true, nil
 }
 
-// Capture returns the pane's recent output, unwrapped, via herdr.
-func (h *Herdr) Capture(paneID string) (string, error) {
-	out, err := herdrCommand("herdr", "pane", "read", paneID, "--source", "recent-unwrapped").Output()
-	if err != nil {
-		return "", fmt.Errorf("herdr pane read: %w", err)
-	}
-	return string(out), nil
-}
-
 type herdrAgentGetEnvelope struct {
 	Result struct {
 		Agent struct {

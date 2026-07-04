@@ -36,18 +36,20 @@ const truncationMarker = "\n[truncated — pass file paths for large content]"
 // Message for its recipient; Inbox drains a recipient's queue. The broker is the
 // single truncation enforcement point — the watcher and queue never truncate.
 type Broker struct {
-	Registry *registry.Registry
-	queue    *Queue
+	Registry     *registry.Registry
+	queue        *Queue
+	correlations *correlations
 
 	db  *sql.DB      // shared store for the brokers row; nil outside Serve
 	srv *http.Server // set while Serve is running, for Shutdown
 }
 
-// New returns a Broker with an empty registry and queue.
+// New returns a Broker with an empty registry, queue, and correlation store.
 func New() *Broker {
 	return &Broker{
-		Registry: registry.New(),
-		queue:    NewQueue(),
+		Registry:     registry.New(),
+		queue:        NewQueue(),
+		correlations: newCorrelations(),
 	}
 }
 
@@ -73,7 +75,46 @@ func (b *Broker) Send(msg message.Message) error {
 	if err := db.RecordMessage(b.db, msg); err != nil {
 		log.Printf("agentbus: record message %s history: %v", msg.ID, err)
 	}
+	// Correlate a Request to its Requester so a later `agentbus reply <id>` can
+	// route the terminal Reply back. Never correlate a Reply: a Reply is terminal
+	// and must not become answerable itself, which would reintroduce the loop
+	// ADR-0001 prevents (spec Constraints).
+	if msg.Kind == message.KindRequest {
+		b.correlations.record(msg.ID, msg.From, msg.To)
+	}
 	b.queue.Enqueue(msg)
+	return nil
+}
+
+// Reply produces the terminal Reply to the Request identified by id. It looks up
+// the correlation recorded when the Request was enqueued, builds a Reply from the
+// Recipient back to the original Requester (ReplyTo set to id), and routes it
+// through the normal path so a Requester on another broker is forwarded. The
+// caller supplies only the id and body; origin and destination come from the
+// stored correlation. The correlation is claimed (looked up and removed) in one
+// step, so a request ID answers exactly one Reply even under concurrent replies.
+// An unrecorded id returns ErrUnknownRequest.
+func (b *Broker) Reply(id, body string) error {
+	corr, ok := b.correlations.claim(id)
+	if !ok {
+		return ErrUnknownRequest
+	}
+	reply := message.Message{
+		ID:        message.NewID(),
+		Kind:      message.KindReply,
+		From:      corr.recipient,
+		To:        corr.requester,
+		Body:      body,
+		ReplyTo:   id,
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := b.Route(reply); err != nil {
+		// Routing failed before the Reply was delivered; restore the claim so
+		// the recipient can retry rather than losing the request ID to a
+		// transient error.
+		b.correlations.record(id, corr.requester, corr.recipient)
+		return err
+	}
 	return nil
 }
 

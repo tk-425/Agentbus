@@ -1,10 +1,11 @@
-// Package watcher delivers Requests to an Agent instance and returns Replies to
+// Package watcher delivers Requests to an Agent instance and announces Replies to
 // requesters. It enforces the request/reply asymmetry of ADR-0001: a Request is
 // injected only while the agent is Idle, and a Reply is inbox-only and never
-// injected. Live agent panes are full-screen TUIs whose captures are screen
-// repaints, not an append-only transcript, so the Reply body is recovered via
-// per-Request marker lines the agent is instructed to print — never via a
-// before/after capture delta.
+// injected. The injected Request carries a single trailing instruction naming the
+// reply command with the request ID pre-filled; the Recipient returns its answer
+// by running `agentbus reply <id>` (ADR-0003), so the Watcher never captures the
+// pane to recover a Reply — its delivery job is to inject a clean Request while
+// Idle and confirm submission, then announce any arrived Replies (ADR-0002).
 package watcher
 
 import (
@@ -24,31 +25,17 @@ import (
 var (
 	idlePollInterval = 5 * time.Millisecond
 	idleMaxAttempts  = 200
-	// markerPoll* bound how long the watcher rereads the capture waiting for
-	// the agent's marked reply to appear after Idle is confirmed.
-	markerPollInterval    = 100 * time.Millisecond
-	markerPollMaxAttempts = 50
 	// busyGrace bounds how long after injection the watcher waits to see the
 	// agent leave Idle — the confirmation that the Request was submitted.
 	busyGrace = 3 * time.Second
 )
 
-// Marker lines locate the agent's actual answer inside a live TUI frame. They
-// are keyed by Request ID so stale markers from earlier Requests in the same
-// scrollback can never match.
-const (
-	replyStartPrefix = "<<AGENTBUS_REPLY "
-	replyEndPrefix   = "<<AGENTBUS_END "
-	markerSuffix     = ">>"
-)
-
-func startMarker(id string) string { return replyStartPrefix + id + markerSuffix }
-func endMarker(id string) string   { return replyEndPrefix + id + markerSuffix }
-
 // Watch performs one delivery pass for agent (bound to paneID): it drains the
-// agent's inbox and, for each Request, waits until the pane is Idle, injects the
-// Request, captures the output, and sends a Reply back to the requester. Replies
-// are never injected.
+// agent's Requests and, for each, waits until the pane is Idle, injects the
+// Request, and confirms the agent accepted it. The Recipient returns its answer
+// by running `agentbus reply <id>` (ADR-0003); the Watcher no longer captures the
+// pane or builds Replies. Replies are never injected — their arrival is announced
+// by notifyReplies at the end of the pass (ADR-0002).
 func Watch(agent, paneID string, mux multiplexer.Multiplexer, c *client.Client) error {
 	for _, msg := range c.Requests(agent) {
 		idle, err := waitIdle(paneID, mux)
@@ -71,11 +58,10 @@ func Watch(agent, paneID string, mux multiplexer.Multiplexer, c *client.Client) 
 		}
 
 		// Confirm the agent actually accepted the Request: on a live TUI the
-		// idle status flips to working only after the submission registers, and
-		// a waitIdle issued before that flip returns immediately — producing a
-		// premature (empty) reply. If the transition is never seen, the Enter
-		// may not have registered after the paste; press it once more. A stray
-		// Enter into an idle agent's empty composer is a no-op.
+		// idle status flips to working only after the submission registers. If
+		// the transition is never seen, the Enter may not have registered after
+		// the paste; press it once more. A stray Enter into an idle agent's empty
+		// composer is a no-op.
 		busy, err := mux.AwaitBusy(paneID, busyGrace)
 		if err != nil {
 			return err
@@ -87,39 +73,6 @@ func Watch(agent, paneID string, mux multiplexer.Multiplexer, c *client.Client) 
 			if _, err := mux.AwaitBusy(paneID, busyGrace); err != nil {
 				return err
 			}
-		}
-
-		idle, err = waitIdle(paneID, mux)
-		if err != nil {
-			return err
-		}
-		if !idle {
-			if err := c.Send(msg); err != nil {
-				return err
-			}
-			continue
-		}
-
-		output, found, err := waitMarkedReply(paneID, mux, msg.ID)
-		if err != nil {
-			return err
-		}
-		if !found {
-			output = "[agentbus] no marked reply for request " + msg.ID +
-				": the agent did not print the reply markers"
-		}
-
-		reply := message.Message{
-			ID:        message.NewID(),
-			Kind:      message.KindReply,
-			From:      agent,
-			To:        msg.From,
-			Body:      output,
-			ReplyTo:   msg.ID,
-			CreatedAt: time.Now().UTC(),
-		}
-		if err := c.Send(reply); err != nil {
-			return err
 		}
 	}
 	return notifyReplies(agent, paneID, mux, c)
@@ -186,70 +139,12 @@ func waitIdle(paneID string, mux multiplexer.Multiplexer) (bool, error) {
 	return false, nil
 }
 
-// injectionText appends the marker-protocol instruction to the Request body on
-// the same line, so backends that submit on newline cannot send a partial
-// Request.
+// injectionText appends the reply-command instruction to the Request body on the
+// same line, so backends that submit on newline cannot send a partial Request.
+// The instruction names the exact reply command with the request ID pre-filled;
+// the Recipient runs it to return its answer (ADR-0003). No marker text is
+// injected, so the recipient's pane stays clean.
 func injectionText(msg message.Message) string {
-	return msg.Body + " [agentbus: when your answer is complete, print exactly three parts in this order: (1) a line containing only " +
-		startMarker(msg.ID) + ", (2) the full reply body to send back, and (3) a line containing only " +
-		endMarker(msg.ID) + ". Only the text between those two marker lines is returned to the sender. Return the requested result directly; do not summarize, paraphrase, or restate it unless the request explicitly asks for a summary.]"
-}
-
-// waitMarkedReply polls the pane capture until it contains a marked reply for
-// the Request, up to a bounded number of attempts. A false return means the
-// agent never printed the markers within the bound.
-func waitMarkedReply(paneID string, mux multiplexer.Multiplexer, id string) (string, bool, error) {
-	for range markerPollMaxAttempts {
-		cur, err := mux.Capture(paneID)
-		if err != nil {
-			return "", false, err
-		}
-		if body, ok := extractReply(cur, id); ok {
-			return body, true, nil
-		}
-		time.Sleep(markerPollInterval)
-	}
-	return "", false, nil
-}
-
-// extractReply returns the text between the Request's marker lines. A line
-// carrying both markers is the echoed injection instruction, not a reply, and
-// is skipped. Markers are matched by containment so TUI chrome around a marker
-// line does not break extraction, and the last complete pair wins so an echoed
-// or re-wrapped earlier pair in the same frame cannot shadow the real reply.
-func extractReply(capture, id string) (string, bool) {
-	start := startMarker(id)
-	end := endMarker(id)
-	lines := strings.Split(capture, "\n")
-	body := ""
-	found := false
-	startIdx := -1
-	for i, line := range lines {
-		hasStart := strings.Contains(line, start)
-		hasEnd := strings.Contains(line, end)
-		switch {
-		case hasStart && hasEnd:
-			startIdx = -1
-		case hasStart:
-			startIdx = i
-		case hasEnd && startIdx >= 0:
-			body = joinTrimmed(lines[startIdx+1 : i])
-			found = true
-			startIdx = -1
-		}
-	}
-	return strings.TrimSpace(body), found
-}
-
-// joinTrimmed right-trims each captured line and strips a trailing cursor
-// block glyph: a TUI may pad lines to pane width and paint its cursor cell
-// inside the marked region, and neither is part of the agent's answer.
-func joinTrimmed(lines []string) string {
-	out := make([]string, len(lines))
-	for i, line := range lines {
-		line = strings.TrimRight(line, " \t")
-		line = strings.TrimSuffix(line, "█")
-		out[i] = strings.TrimRight(line, " \t")
-	}
-	return strings.Join(out, "\n")
+	return msg.Body + " [agentbus: when done, run: agentbus reply " + msg.ID +
+		" \"<your answer>\" — replace <your answer> with your full reply. Return the requested result directly; do not summarize, paraphrase, or restate it unless the request explicitly asks for a summary.]"
 }

@@ -2,9 +2,13 @@ package broker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -87,6 +91,121 @@ func TestTruncateWritesNoTempFile(t *testing.T) {
 
 	if len(after) != len(before) {
 		t.Fatalf("truncate must not write overflow to disk: temp entries %d -> %d", len(before), len(after))
+	}
+}
+
+// TestReplyRoutesTerminalReplyToCorrelatedRequester is the broker seam the
+// tracer stood up: seeding a Request records a correlation, and Reply turns that
+// correlation into a terminal Reply from the Recipient back to the Requester.
+func TestReplyRoutesTerminalReplyToCorrelatedRequester(t *testing.T) {
+	b := New()
+	b.Registry.SetLocalProject("proj-a")
+	// The Reply routes to the Requester, so the Requester must be resolvable.
+	requester, err := b.Registry.RegisterType("proj-a", "codex", "%1")
+	if err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+
+	req := message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: "claude-1", Body: "ping"}
+	if err := b.Send(req); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	if err := b.Reply("req-1", "pong"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+
+	got := b.Inbox(requester)
+	if len(got) != 1 {
+		t.Fatalf("Inbox(%s): want 1 Reply, got %d", requester, len(got))
+	}
+	reply := got[0]
+	if reply.Kind != message.KindReply {
+		t.Fatalf("reply Kind = %q, want %q", reply.Kind, message.KindReply)
+	}
+	if reply.From != "claude-1" {
+		t.Fatalf("reply From = %q, want the Recipient %q", reply.From, "claude-1")
+	}
+	if reply.To != requester {
+		t.Fatalf("reply To = %q, want the Requester %q", reply.To, requester)
+	}
+	if reply.Body != "pong" {
+		t.Fatalf("reply Body = %q, want %q", reply.Body, "pong")
+	}
+	if reply.ReplyTo != "req-1" {
+		t.Fatalf("reply ReplyTo = %q, want the request ID %q", reply.ReplyTo, "req-1")
+	}
+}
+
+// TestReplyUnknownIDErrorsAndEnqueuesNothing: a reply naming an ID with no
+// recorded correlation fails loudly and produces no Reply.
+func TestReplyUnknownIDErrorsAndEnqueuesNothing(t *testing.T) {
+	b := New()
+	b.Registry.SetLocalProject("proj-a")
+
+	if err := b.Reply("ghost", "pong"); !errors.Is(err, ErrUnknownRequest) {
+		t.Fatalf("Reply to unknown ID: want ErrUnknownRequest, got %v", err)
+	}
+	if stray := b.Inbox("codex-1"); len(stray) != 0 {
+		t.Fatalf("unknown-ID reply must enqueue nothing, got %+v", stray)
+	}
+}
+
+// TestReplyEvictsCorrelationSoIDAnswersOnce: a request ID answers exactly one
+// Reply — a second Reply to the same ID is unknown once the first is produced.
+func TestReplyEvictsCorrelationSoIDAnswersOnce(t *testing.T) {
+	b := New()
+	b.Registry.SetLocalProject("proj-a")
+	requester, err := b.Registry.RegisterType("proj-a", "codex", "%1")
+	if err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+
+	if err := b.Send(message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: "claude-1", Body: "ping"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if err := b.Reply("req-1", "pong"); err != nil {
+		t.Fatalf("first Reply: %v", err)
+	}
+	if err := b.Reply("req-1", "again"); !errors.Is(err, ErrUnknownRequest) {
+		t.Fatalf("second Reply to evicted ID: want ErrUnknownRequest, got %v", err)
+	}
+}
+
+// TestReplyIsAtomicUnderConcurrentReplies: several replies racing on the same
+// request ID produce exactly one terminal Reply. The correlation is claimed
+// (looked up and removed) under one lock, so only the first caller wins and the
+// rest see the ID as already answered — the requester never gets a duplicate.
+func TestReplyIsAtomicUnderConcurrentReplies(t *testing.T) {
+	b := New()
+	b.Registry.SetLocalProject("proj-a")
+	requester, err := b.Registry.RegisterType("proj-a", "codex", "%1")
+	if err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+	if err := b.Send(message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: "claude-1", Body: "ping"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	const n = 8
+	var wg sync.WaitGroup
+	var successes int32
+	wg.Add(n)
+	for i := range n {
+		go func(i int) {
+			defer wg.Done()
+			if err := b.Reply("req-1", fmt.Sprintf("pong-%d", i)); err == nil {
+				atomic.AddInt32(&successes, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if successes != 1 {
+		t.Fatalf("concurrent replies: got %d successes, want exactly 1", successes)
+	}
+	if got := b.Inbox(requester); len(got) != 1 {
+		t.Fatalf("concurrent replies must enqueue exactly one Reply, got %d", len(got))
 	}
 }
 

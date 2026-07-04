@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -731,6 +734,167 @@ func TestRunAddAgentStoresValidatedCustomType(t *testing.T) {
 	}
 }
 
+// TestRunReplyResolvesBrokerAndSubmits: the reply subcommand resolves the current
+// pane's broker port from the shared registry, dials that broker, and submits the
+// reply — landing a terminal Reply in the original requester's inbox. It supplies
+// neither --from nor --to; the broker fills both from the recorded correlation.
+func TestRunReplyResolvesBrokerAndSubmits(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectRoot := filepath.Join(home, "repo")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	t.Chdir(projectRoot)
+
+	// A live broker holding the request→requester correlation the reply resolves.
+	b := broker.New()
+	b.Registry.SetLocalProject("repo")
+	requester, err := b.Registry.RegisterType("repo", "codex", "%2")
+	if err != nil {
+		t.Fatalf("RegisterType requester: %v", err)
+	}
+	if err := b.Send(message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: "claude-1", Body: "ping"}); err != nil {
+		t.Fatalf("seed request: %v", err)
+	}
+	srv := httptest.NewServer(b.Handler())
+	defer srv.Close()
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse server URL: %v", err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse server port: %v", err)
+	}
+
+	// The shared registry the command reads: the recipient pane %1 registered with
+	// the live broker's port, so LookupSharedByPane resolves it to that broker.
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	r := registry.New()
+	r.AttachDB(d, port)
+	if _, err := r.RegisterType("repo", "claude", "%1"); err != nil {
+		t.Fatalf("RegisterType recipient: %v", err)
+	}
+
+	// The command runs from the recipient's pane.
+	t.Setenv("TMUX_PANE", "%1")
+	if err := runReply(&cobra.Command{}, []string{"req-1", "pong", "from", "claude"}); err != nil {
+		t.Fatalf("runReply: %v", err)
+	}
+
+	got := b.Inbox(requester)
+	if len(got) != 1 {
+		t.Fatalf("requester inbox: got %d, want 1 terminal Reply", len(got))
+	}
+	if got[0].Kind != message.KindReply || got[0].From != "claude-1" || got[0].ReplyTo != "req-1" {
+		t.Fatalf("unexpected reply: %+v", got[0])
+	}
+	if got[0].Body != "pong from claude" {
+		t.Fatalf("reply body = %q, want %q", got[0].Body, "pong from claude")
+	}
+}
+
+// TestRunReplyErrorsWhenPaneUnregistered: a reply from a pane with no registered
+// Agent instance fails loudly rather than silently dropping.
+func TestRunReplyErrorsWhenPaneUnregistered(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("TMUX_PANE", "%9")
+
+	err := runReply(&cobra.Command{}, []string{"req-1", "pong"})
+	if err == nil || !strings.Contains(err.Error(), "not registered") {
+		t.Fatalf("runReply from unregistered pane: got %v, want a not-registered error", err)
+	}
+}
+
+// TestRunInboxUsesCurrentProjectBroker guards the multi-broker regression where
+// inbox dialed the global port file and silently read another project's broker.
+func TestRunInboxUsesCurrentProjectBroker(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectRoot := filepath.Join(home, "repo")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	t.Chdir(projectRoot)
+
+	right := broker.New()
+	if err := right.Send(message.Message{
+		ID:        "reply-1",
+		Kind:      message.KindReply,
+		From:      "opencode-2",
+		To:        "pi-2",
+		Body:      "from the right broker",
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("seed right broker: %v", err)
+	}
+	rightSrv := httptest.NewServer(right.Handler())
+	defer rightSrv.Close()
+	rightURL, err := url.Parse(rightSrv.URL)
+	if err != nil {
+		t.Fatalf("parse right server URL: %v", err)
+	}
+	rightPort, err := strconv.Atoi(rightURL.Port())
+	if err != nil {
+		t.Fatalf("parse right server port: %v", err)
+	}
+
+	wrong := broker.New()
+	wrongSrv := httptest.NewServer(wrong.Handler())
+	defer wrongSrv.Close()
+	wrongURL, err := url.Parse(wrongSrv.URL)
+	if err != nil {
+		t.Fatalf("parse wrong server URL: %v", err)
+	}
+	wrongPort, err := strconv.Atoi(wrongURL.Port())
+	if err != nil {
+		t.Fatalf("parse wrong server port: %v", err)
+	}
+
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if _, err := d.Exec(
+		`INSERT INTO brokers (project_root, port, multiplexer, pid) VALUES (?, ?, ?, ?)`,
+		projectRoot, rightPort, "*multiplexer.Herdr", 12345,
+	); err != nil {
+		t.Fatalf("insert local broker row: %v", err)
+	}
+	if err := os.WriteFile(broker.DefaultPortFile(), []byte(strconv.Itoa(wrongPort)), 0o600); err != nil {
+		t.Fatalf("write global port file: %v", err)
+	}
+
+	inboxName = "pi-2"
+	inboxWait = false
+	inboxTimeout = 30 * time.Second
+
+	out := captureStdout(t, func() {
+		if err := runInbox(&cobra.Command{}, nil); err != nil {
+			t.Fatalf("runInbox: %v", err)
+		}
+	})
+	got := strings.TrimSpace(out)
+	want := "[reply] from opencode-2: from the right broker"
+	if got != want {
+		t.Fatalf("inbox output = %q, want %q", got, want)
+	}
+}
+
 func TestAdvertisedCommandsHaveConcreteHandlers(t *testing.T) {
 	commands := []*cobra.Command{
 		startCmd,
@@ -738,6 +902,7 @@ func TestAdvertisedCommandsHaveConcreteHandlers(t *testing.T) {
 		registerCmd,
 		unregisterCmd,
 		sendCmd,
+		replyCmd,
 		inboxCmd,
 		listCmd,
 		statusCmd,

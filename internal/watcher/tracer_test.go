@@ -11,16 +11,17 @@ import (
 	"github.com/tk-425/agentbus/internal/registry"
 )
 
-// TestTracer proves the end-to-end happy path through every layer: a Request to
-// an idle mock Agent instance is injected once, its captured output returns to
-// the requester's inbox as exactly one Reply, and the Reply is never injected.
+// TestTracer proves the watcher's delivery path through every layer: a Request to
+// an idle mock Agent instance is injected exactly once with the reply-command
+// instruction (ID pre-filled, no marker text), submission is confirmed, and the
+// watcher produces no Reply — the Recipient returns its answer by running
+// `agentbus reply <id>` (ADR-0003), not via pane capture.
 func TestTracer(t *testing.T) {
 	const (
 		requester     = "codex-1"
 		recipient     = "claude-1"
 		recipientPane = "%1"
 		requestText   = "summarize the spec"
-		captured      = "here is the summary"
 	)
 
 	b := broker.New()
@@ -29,6 +30,7 @@ func TestTracer(t *testing.T) {
 
 	mux := multiplexer.NewMock()
 	mux.SetIdle(recipientPane, true)
+	mux.SetAwaitBusy(recipientPane, true)
 
 	// Requester sends a Request to the recipient.
 	req := message.Message{
@@ -38,7 +40,6 @@ func TestTracer(t *testing.T) {
 		To:   recipient,
 		Body: requestText,
 	}
-	mux.SetCapture(recipientPane, startMarker(req.ID)+"\n"+captured+"\n"+endMarker(req.ID))
 	if err := c.Send(req); err != nil {
 		t.Fatalf("send request: %v", err)
 	}
@@ -48,24 +49,14 @@ func TestTracer(t *testing.T) {
 		t.Fatalf("watch: %v", err)
 	}
 
-	// Exactly one Reply lands in the requester's inbox.
-	inbox := c.Inbox(requester)
-	if len(inbox) != 1 {
-		t.Fatalf("requester inbox: got %d messages, want 1", len(inbox))
-	}
-	reply := inbox[0]
-	if reply.Kind != message.KindReply {
-		t.Errorf("reply kind: got %q, want %q", reply.Kind, message.KindReply)
-	}
-	if reply.Body != captured {
-		t.Errorf("reply body: got %q, want %q", reply.Body, captured)
-	}
-	if reply.ReplyTo != req.ID {
-		t.Errorf("reply ReplyTo: got %q, want %q", reply.ReplyTo, req.ID)
+	// The watcher builds no Reply; the requester's inbox stays empty until the
+	// recipient runs the reply command.
+	if inbox := c.Inbox(requester); len(inbox) != 0 {
+		t.Fatalf("watcher must not produce a Reply; requester inbox = %+v", inbox)
 	}
 
-	// The request text (with its marker instruction) was injected exactly once;
-	// the reply text never was.
+	// The request text was injected exactly once, leading with the body and
+	// naming the reply command with the request ID — and no marker text.
 	injected := mux.Injected(recipientPane)
 	if len(injected) != 1 {
 		t.Fatalf("injection log: got %d entries, want 1 (%v)", len(injected), injected)
@@ -76,9 +67,10 @@ func TestTracer(t *testing.T) {
 	if !strings.HasPrefix(injected[0], requestText) {
 		t.Errorf("injected text must lead with the request body, got %q", injected[0])
 	}
-	for _, in := range injected {
-		if strings.Contains(in, captured) {
-			t.Errorf("reply text %q was injected into the pane", captured)
-		}
+	if !strings.Contains(injected[0], "agentbus reply "+req.ID) {
+		t.Errorf("injected text must name the reply command with the request ID, got %q", injected[0])
+	}
+	if strings.Contains(injected[0], "<<") || strings.Contains(injected[0], ">>") {
+		t.Errorf("injected text must carry no marker text, got %q", injected[0])
 	}
 }

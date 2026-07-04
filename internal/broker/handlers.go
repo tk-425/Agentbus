@@ -18,6 +18,7 @@ func (b *Broker) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/register", b.handleRegister)
 	mux.HandleFunc("/send", b.handleSend)
+	mux.HandleFunc("/reply", b.handleReply)
 	mux.HandleFunc("/forward", b.handleForward)
 	mux.HandleFunc("/inbox/", b.handleInbox)
 	mux.HandleFunc("/ack/", b.handleAck)
@@ -66,6 +67,36 @@ func (b *Broker) handleSend(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := b.Route(msg); err != nil {
 		if errors.Is(err, registry.ErrUnknownAgent) {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type replyRequest struct {
+	ID   string `json:"id"`
+	Body string `json:"body"`
+}
+
+// handleReply produces the terminal Reply for a request ID. The Recipient runs
+// `agentbus reply <id> <message>`; the broker resolves the original Requester
+// from the recorded correlation. An unknown ID is a loud 404, other failures a
+// 500, success a 204.
+func (b *Broker) handleReply(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var req replyRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad request body", http.StatusBadRequest)
+		return
+	}
+	if err := b.Reply(req.ID, req.Body); err != nil {
+		if errors.Is(err, ErrUnknownRequest) {
 			http.Error(w, err.Error(), http.StatusNotFound)
 			return
 		}

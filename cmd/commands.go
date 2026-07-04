@@ -38,6 +38,29 @@ var pidAlive = func(pid int) bool {
 	return proc.Signal(syscall.Signal(0)) == nil
 }
 
+// localBrokerClient resolves the current project's broker from the shared
+// brokers table instead of the global port file, which may point at another
+// project's broker when multiple brokers are running.
+func localBrokerClient(projectRoot string) (*client.Client, error) {
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		return nil, err
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		return nil, err
+	}
+
+	var port int
+	if err := d.QueryRow(
+		`SELECT port FROM brokers WHERE project_root = ?`,
+		projectRoot,
+	).Scan(&port); err != nil {
+		return nil, fmt.Errorf("no running broker for %s (run `agentbus start`)", filepath.Base(projectRoot))
+	}
+	return client.NewRemote(fmt.Sprintf("http://127.0.0.1:%d", port)), nil
+}
+
 // runningBroker returns the live broker recorded for projectRoot. A row whose
 // pid is dead (crashed broker) is not live and must not block a new start —
 // Serve's upsert repairs the stale row.
@@ -175,9 +198,9 @@ func runRegister(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c, err := client.Dial(broker.DefaultPortFile())
+	c, err := localBrokerClient(projectRoot)
 	if err != nil {
-		return fmt.Errorf("no running broker (run `agentbus start`): %w", err)
+		return err
 	}
 	name, err := c.Register(filepath.Base(projectRoot), registerName, paneID)
 	if err != nil {
@@ -285,9 +308,14 @@ var sendCmd = &cobra.Command{
 }
 
 func runSend(cmd *cobra.Command, args []string) error {
-	c, err := client.Dial(broker.DefaultPortFile())
+	projectRoot, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("no running broker (run `agentbus start`): %w", err)
+		return err
+	}
+
+	c, err := localBrokerClient(projectRoot)
+	if err != nil {
+		return err
 	}
 	// The broker routes the Request (locally or cross-broker) and errors loudly
 	// on an unknown Agent instance.
@@ -299,6 +327,47 @@ func runSend(cmd *cobra.Command, args []string) error {
 		Body:      strings.Join(args, " "),
 		CreatedAt: time.Now().UTC(),
 	})
+}
+
+var replyCmd = &cobra.Command{
+	Use:   "reply <request-id> <message>",
+	Short: "Reply to a request; routes back to the original requester",
+	Args:  cobra.MinimumNArgs(2),
+	RunE:  runReply,
+}
+
+func runReply(cmd *cobra.Command, args []string) error {
+	requestID := args[0]
+	body := strings.Join(args[1:], " ")
+
+	paneID := resolvePaneID("")
+	if paneID == "" {
+		return fmt.Errorf("cannot determine pane: not inside tmux/herdr")
+	}
+
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		return err
+	}
+
+	r := registry.New()
+	r.AttachDB(d, 0)
+	inst, ok := r.LookupSharedByPane(paneID)
+	if !ok {
+		return fmt.Errorf("this pane is not registered (run `agentbus register --name <type>` or `agentbus discover`)")
+	}
+	if inst.BrokerPort == 0 {
+		return fmt.Errorf("no broker port recorded for %s (is the broker running?)", inst.Name)
+	}
+
+	// Dial the broker that registered this pane; it holds the correlation for the
+	// request ID and routes the terminal Reply back to the original requester.
+	c := client.NewRemote(fmt.Sprintf("http://127.0.0.1:%d", inst.BrokerPort))
+	return c.Reply(requestID, body)
 }
 
 var (
@@ -314,9 +383,14 @@ var inboxCmd = &cobra.Command{
 }
 
 func runInbox(cmd *cobra.Command, args []string) error {
-	c, err := client.Dial(broker.DefaultPortFile())
+	projectRoot, err := os.Getwd()
 	if err != nil {
-		return fmt.Errorf("no running broker (run `agentbus start`): %w", err)
+		return err
+	}
+
+	c, err := localBrokerClient(projectRoot)
+	if err != nil {
+		return err
 	}
 
 	deadline := time.Now().Add(inboxTimeout)
@@ -530,9 +604,9 @@ func runDiscover(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	c, err := client.Dial(broker.DefaultPortFile())
+	c, err := localBrokerClient(projectRoot)
 	if err != nil {
-		return fmt.Errorf("no running broker (run `agentbus start`): %w", err)
+		return err
 	}
 	created, err := discoverWith(projectRoot, mux, defs, bound, func(agentType, paneID string) (string, error) {
 		return c.Register(localProject, agentType, paneID)

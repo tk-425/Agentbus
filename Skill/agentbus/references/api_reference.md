@@ -31,6 +31,19 @@ Send a **request** to another agent. Both flags are required.
 - Bodies are truncated at 32KB — pass a file path for large content.
 - Returns immediately. Do not poll; the reply arrives asynchronously.
 
+### `agentbus reply <request-id> "<message>"`
+Answer a **request** received from another agent. Run this once the work is done;
+the injected request instruction names the exact command with the `<request-id>`
+already filled in.
+
+- `<request-id>` — the ID from the injected request instruction; copy it verbatim.
+- The message is the final positional argument; quote it. Put only the answer —
+  no reasoning, no restating the question.
+- Takes no `--from`/`--to`: the broker resolves the original requester from the
+  request ID and routes the reply back to its inbox as a terminal reply.
+- Errors loudly if the request ID is unknown (e.g. already answered) — a reply is
+  produced at most once per request.
+
 ### `agentbus inbox --name <me>`
 Read and clear this agent's inbox (drain-on-read — messages are marked read and
 will not appear again). Prints each queued reply as `[reply] from <sender>: <body>`.
@@ -49,15 +62,10 @@ command to read the reply it announced.
 - A **reply** is inbox-only and terminal (it produces nothing further). Its
   arrival is announced once by an injected notification while the requester is
   idle: `[agentbus] new reply from <sender> — run: agentbus inbox --name <you>`.
-- When answering a received request, wrap the final answer between the two marker
-  lines named in the injected instruction:
-  ```
-  <<AGENTBUS_REPLY <id>>>
-  <answer only>
-  <<AGENTBUS_END <id>>>
-  ```
-  agentbus extracts the text between the markers as the reply body. Without the
-  markers the requester receives a diagnostic error instead of the answer.
+- When answering a received request, run `agentbus reply <request-id> "<answer>"`
+  with the ID from the injected instruction. The broker routes the answer back to
+  the original requester's inbox as the terminal reply. If the reply command is
+  never run, no reply is produced and the requester can re-ask.
 
 ## Setup commands (usually run by the human, not the agent)
 

@@ -205,6 +205,7 @@ func init() {
 		unregisterCmd,
 		whoamiCmd,
 		sendCmd,
+		replyCmd,
 		inboxCmd,
 		listCmd,
 		statusCmd,
