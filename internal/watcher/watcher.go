@@ -145,6 +145,6 @@ func waitIdle(paneID string, mux multiplexer.Multiplexer) (bool, error) {
 // the Recipient runs it to return its answer (ADR-0003). No marker text is
 // injected, so the recipient's pane stays clean.
 func injectionText(msg message.Message) string {
-	return msg.Body + " [agentbus: when done, run: agentbus reply " + msg.ID +
-		" \"<your answer>\" — replace <your answer> with your full reply. Return the requested result directly; do not summarize, paraphrase, or restate it unless the request explicitly asks for a summary.]"
+	return msg.Body + " [agentbus: required final step — you must run exactly: agentbus reply " + msg.ID +
+		" \"<your answer>\". Replace <your answer> with your full reply. Do not end the task without running this command. Return the requested result directly; do not summarize, paraphrase, or restate it unless the request explicitly asks for a summary.]"
 }
