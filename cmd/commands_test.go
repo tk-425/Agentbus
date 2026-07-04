@@ -304,14 +304,7 @@ func TestRunStatusPrintsSingleLineSummary(t *testing.T) {
 	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	defer os.Chdir(oldWD)
-	if err := os.Chdir(projectRoot); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
+	t.Chdir(projectRoot)
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd after Chdir: %v", err)
@@ -401,14 +394,7 @@ func TestRunStartIsNoOpWhenBrokerAlreadyRunning(t *testing.T) {
 	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	defer os.Chdir(oldWD)
-	if err := os.Chdir(projectRoot); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
+	t.Chdir(projectRoot)
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatalf("Getwd after Chdir: %v", err)
@@ -452,16 +438,9 @@ func TestRunStartAbortsWithoutMultiplexer(t *testing.T) {
 	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	defer os.Chdir(oldWD)
-	if err := os.Chdir(projectRoot); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
+	t.Chdir(projectRoot)
 
-	err = runStart(&cobra.Command{}, nil)
+	err := runStart(&cobra.Command{}, nil)
 	if !errors.Is(err, multiplexer.ErrNoMultiplexer) {
 		t.Fatalf("runStart error = %v, want ErrNoMultiplexer", err)
 	}
@@ -567,14 +546,7 @@ func TestRunListScopesToCurrentProjectByDefault(t *testing.T) {
 	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	defer os.Chdir(oldWD)
-	if err := os.Chdir(projectRoot); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
+	t.Chdir(projectRoot)
 
 	d, err := db.Open(sharedDBPath())
 	if err != nil {
@@ -619,14 +591,7 @@ func TestRunListPrintsNothingWhenNoInstanceInCurrentProject(t *testing.T) {
 	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	defer os.Chdir(oldWD)
-	if err := os.Chdir(projectRoot); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
+	t.Chdir(projectRoot)
 
 	d, err := db.Open(sharedDBPath())
 	if err != nil {
@@ -665,18 +630,7 @@ func TestRunUnregisterRemovesExactQualifiedTarget(t *testing.T) {
 	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	oldWD, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Getwd: %v", err)
-	}
-	defer func() {
-		if err := os.Chdir(oldWD); err != nil {
-			t.Fatalf("restore cwd: %v", err)
-		}
-	}()
-	if err := os.Chdir(projectRoot); err != nil {
-		t.Fatalf("Chdir: %v", err)
-	}
+	t.Chdir(projectRoot)
 
 	d, err := db.Open(sharedDBPath())
 	if err != nil {
