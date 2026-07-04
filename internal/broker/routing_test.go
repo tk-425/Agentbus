@@ -165,6 +165,48 @@ func TestRoutingCrossProjectReplyRoutesToRequesterBroker(t *testing.T) {
 	}
 }
 
+// TestReplyForwardsCrossBrokerToRequesterBroker exercises the full command-reply
+// path across brokers: a proj-a Requester's Request is forwarded to recipient@proj-b
+// (populating the correlation on the proj-b broker via /forward → Send), and a
+// Reply on the proj-b broker forwards the terminal Reply back to the proj-a
+// Requester's own broker inbox.
+func TestReplyForwardsCrossBrokerToRequesterBroker(t *testing.T) {
+	d := newSharedDB(t)
+	requesterBroker := newPeerBroker(t, d, "proj-a")
+	recipientBroker := newPeerBroker(t, d, "proj-b")
+
+	requester, err := requesterBroker.Registry.RegisterType("proj-a", "codex", "%1")
+	if err != nil {
+		t.Fatalf("RegisterType requester: %v", err)
+	}
+	recipient, err := recipientBroker.Registry.RegisterType("proj-b", "claude", "%2")
+	if err != nil {
+		t.Fatalf("RegisterType recipient: %v", err)
+	}
+
+	// The Request forwards to proj-b, whose broker records the correlation via
+	// its /forward → Send path.
+	req := message.Message{ID: "req-x", Kind: message.KindRequest, From: requester, To: recipient + "@proj-b", Body: "ping"}
+	if err := requesterBroker.Route(req); err != nil {
+		t.Fatalf("Route request: %v", err)
+	}
+
+	if err := recipientBroker.Reply("req-x", "pong"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+
+	got := requesterBroker.Inbox(requester)
+	if len(got) != 1 || got[0].Kind != message.KindReply || got[0].Body != "pong" {
+		t.Fatalf("cross-broker Reply should land in the requester's inbox on its own broker, got %+v", got)
+	}
+	if got[0].From != recipient || got[0].ReplyTo != "req-x" {
+		t.Fatalf("cross-broker Reply origin/ReplyTo mismatch: %+v", got[0])
+	}
+	if stray := recipientBroker.Inbox(requester); len(stray) != 0 {
+		t.Fatalf("cross-broker Reply must not enqueue on the replier's broker, got %+v", stray)
+	}
+}
+
 func TestRoutingForwardedRequestPersistsDurableHistoryOnRecipientBroker(t *testing.T) {
 	d := newSharedDB(t)
 	senderBroker := newPeerBroker(t, d, "proj-a")

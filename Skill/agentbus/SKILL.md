@@ -1,6 +1,6 @@
 ---
 name: agentbus
-description: This skill should be used when an AI coding agent needs to communicate or coordinate with other AI coding agents running on the same machine — sending a question or task to a specific other agent, receiving the reply, or acting on an "[agentbus] new reply" notification that appears in its pane. Covers the agentbus CLI (whoami, list, send, inbox) and the request/reply conventions. Trigger phrases include "ask the codex agent to…", "have claude-3 check…", "coordinate with the other agent", or seeing an "[agentbus]" line appear unprompted.
+description: This skill should be used when an AI coding agent needs to communicate or coordinate with other AI coding agents running on the same machine — sending a question or task to a specific other agent, replying to a request it received, receiving a reply, or acting on an "[agentbus] new reply" notification that appears in its pane. Covers the agentbus CLI (whoami, list, send, reply, inbox) and the request/reply conventions. Trigger phrases include "ask the codex agent to…", "have claude-3 check…", "coordinate with the other agent", or seeing an "[agentbus]" line appear unprompted.
 ---
 
 # agentbus
@@ -96,24 +96,20 @@ agentbus inbox --name claude-2 --wait --timeout 120s
 A request from another agent arrives as ordinary text injected into this pane,
 followed by an instruction like:
 
-> …print exactly three parts in this order: (1) a line containing only
-> `<<AGENTBUS_REPLY abc123>>`, (2) the full reply body to send back, and
-> (3) a line containing only `<<AGENTBUS_END abc123>>`. Only the text between
-> those two marker lines is returned to the sender.
+> [agentbus: when done, run: agentbus reply abc123 "<your answer>"]
 
-Follow that instruction literally. Do the work, then print the final answer
-between exactly those two marker lines:
+Do the work, then run that command with the request ID it names and your answer
+as the message:
 
-```
-<<AGENTBUS_REPLY abc123>>
-All 42 tests passed.
-<<AGENTBUS_END abc123>>
+```bash
+agentbus reply abc123 "All 42 tests passed."
 ```
 
-The markers let agentbus extract the actual answer from the terminal frame and
-send it back as a clean reply. Skipping them means the requester gets a
-diagnostic error instead of an answer. Put only the answer between the markers —
-no reasoning, no restating the question.
+The broker matches the request ID to the original requester and routes your
+answer to its inbox as the terminal reply. Put only the answer in the message —
+no reasoning, no restating the question. If you never run the command, no reply
+is produced; the requester can re-ask. Answer a given request ID once — a second
+`reply` for the same ID errors because the reply was already delivered.
 
 ## Etiquette
 

@@ -5,18 +5,14 @@ import (
 	"time"
 )
 
-// Mock is an in-memory Multiplexer for tests. Idle state is settable per pane,
-// every Inject is appended to a per-pane log, and Capture returns a programmable
-// string. It never blocks.
+// Mock is an in-memory Multiplexer for tests. Idle state is settable per pane
+// and every Inject is appended to a per-pane log. It never blocks.
 type Mock struct {
 	mu           sync.Mutex
 	idle         map[string]bool     // paneID -> idle
 	idleAfter    map[string]int      // paneID -> IsIdle calls to report busy before flipping to idle
 	idleCalls    map[string]int      // paneID -> count of IsIdle calls
 	lastIdle     map[string]bool     // paneID -> idle value the most recent IsIdle returned
-	captures     map[string]string   // paneID -> output Capture returns
-	captureSeq   map[string][]string // paneID -> sequential outputs Capture returns
-	captureIndex map[string]int      // paneID -> current capture sequence index
 	injected     map[string][]string // paneID -> append-only injection log
 	injIdle      map[string][]bool   // paneID -> idle state observed at each Inject
 	awaitBusy    map[string]bool     // paneID -> result AwaitBusy reports
@@ -31,9 +27,6 @@ func NewMock() *Mock {
 		idleAfter:    map[string]int{},
 		idleCalls:    map[string]int{},
 		lastIdle:     map[string]bool{},
-		captures:     map[string]string{},
-		captureSeq:   map[string][]string{},
-		captureIndex: map[string]int{},
 		injected:     map[string][]string{},
 		injIdle:      map[string][]bool{},
 		awaitBusy:    map[string]bool{},
@@ -74,27 +67,6 @@ func (m *Mock) InjectedWhileIdle(paneID string) []bool {
 	return out
 }
 
-// SetCapture sets the string Capture will return for a pane.
-func (m *Mock) SetCapture(paneID, output string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.captures[paneID] = output
-	delete(m.captureSeq, paneID)
-	delete(m.captureIndex, paneID)
-}
-
-// SetCaptureSequence sets the sequential outputs Capture will return for a pane.
-// Once the sequence is exhausted, Capture keeps returning the final value.
-func (m *Mock) SetCaptureSequence(paneID string, outputs []string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.captureSeq[paneID] = append([]string(nil), outputs...)
-	m.captureIndex[paneID] = 0
-	if len(outputs) > 0 {
-		m.captures[paneID] = outputs[len(outputs)-1]
-	}
-}
-
 // Injected returns a copy of the injection log for a pane.
 func (m *Mock) Injected(paneID string) []string {
 	m.mu.Lock()
@@ -113,21 +85,6 @@ func (m *Mock) Inject(paneID, text string) error {
 	m.injected[paneID] = append(m.injected[paneID], text)
 	m.injIdle[paneID] = append(m.injIdle[paneID], m.lastIdle[paneID])
 	return nil
-}
-
-// Capture returns the programmed output for the pane.
-func (m *Mock) Capture(paneID string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if seq := m.captureSeq[paneID]; len(seq) > 0 {
-		idx := m.captureIndex[paneID]
-		if idx >= len(seq) {
-			return seq[len(seq)-1], nil
-		}
-		m.captureIndex[paneID] = idx + 1
-		return seq[idx], nil
-	}
-	return m.captures[paneID], nil
 }
 
 // SetAwaitBusy sets the result AwaitBusy reports for a pane — true models an

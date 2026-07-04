@@ -22,8 +22,6 @@ type Pane struct {
 type Multiplexer interface {
 	// Inject types text into the pane (used only for Requests, only while Idle).
 	Inject(paneID, text string) error
-	// Capture returns the pane's current output.
-	Capture(paneID string) (string, error)
 	// IsIdle reports whether the pane's agent is not mid-task.
 	IsIdle(paneID string) (bool, error)
 	// AwaitBusy blocks until the pane's agent leaves Idle — the signal that an

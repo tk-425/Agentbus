@@ -92,6 +92,27 @@ func (c *Client) Send(msg message.Message) error {
 	return nil
 }
 
+// Reply produces the terminal Reply to the Request identified by id. The broker
+// resolves the original Requester from the recorded correlation, so the caller
+// supplies only the id and body — never a Request's --from/--to. A non-2xx HTTP
+// status (e.g. an unknown id → 404) surfaces as an error so it fails loudly at
+// the command.
+func (c *Client) Reply(id, body string) error {
+	if c.broker != nil {
+		return c.broker.Reply(id, body)
+	}
+	payload, _ := json.Marshal(map[string]string{"id": id, "body": body})
+	resp, err := c.httpc.Post(c.baseURL+"/reply", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("reply: %s", resp.Status)
+	}
+	return nil
+}
+
 // Inbox drains the inbox for agent. On an HTTP error it returns nil, preserving
 // the in-process signature the Watcher depends on.
 func (c *Client) Inbox(agent string) []message.Message {
