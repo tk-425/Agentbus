@@ -29,15 +29,35 @@ that to the human (the broker may not be running) rather than inventing a name.
 
 ## Send a request to another agent
 
-1. Find valid targets:
+Address the recipient by the exact token `list` prints. How you find it depends
+on how the human framed the target:
+
+1. **The human named a project** ("ask opencode in Project-1 to…"): the recipient
+   is in another project, so list across every project and use the fully
+   qualified `name@project` token:
    ```bash
-   agentbus list        # prints every registered agent as name@project
+   agentbus list --all        # every project, one name@project per line
    ```
-2. Send to one specific agent by name. `--from` is this agent (from `whoami`),
-   `--to` is the recipient, and the message is one self-contained instruction:
+   Find the matching row (e.g. `opencode-1@Project-1`) and address it exactly:
    ```bash
-   agentbus send --from claude-2 --to codex-1 "Run the unit tests in ./api and report only pass/fail plus any failing test names."
+   agentbus send --from claude-2 --to opencode-1@Project-1 "Run the unit tests in ./api and report only pass/fail plus any failing test names."
    ```
+2. **The human named no project** ("ask opencode to…"): the recipient is in this
+   project. List the current project (the default scope) and use the bare name:
+   ```bash
+   agentbus list              # this project only, one name@project per line
+   ```
+   ```bash
+   agentbus send --from claude-2 --to opencode-1 "Run the unit tests in ./api and report only pass/fail plus any failing test names."
+   ```
+   If more than one instance matches (e.g. two `opencode-*`), do **not** guess —
+   ask the human which one to use.
+
+`--from` is always this agent's own name (from `whoami`); `--to` is the recipient;
+the message is one self-contained instruction. A bare name resolves within this
+project; use `name@project` to reach another project — a bare name that collides
+across projects silently resolves to just one of them, so qualify it when the
+project matters.
 
 Do not block waiting after sending. The reply routes back automatically; a
 notification announces it (see next section). Large content does not belong in a

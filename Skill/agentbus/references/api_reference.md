@@ -14,9 +14,11 @@ Resolves the pane from `HERDR_PANE` / `TMUX_PANE`. Use its output as `--from`.
   this pane yet. Do not invent a name; tell the human the broker may not be
   running or has not discovered this agent.
 
-### `agentbus list`
-List every registered Agent instance across projects, one per line as
-`name@project` (e.g. `codex-1@api`). Use it to pick a valid `--to` target.
+### `agentbus list [--all]`
+List registered Agent instances, one per line as `name@project`
+(e.g. `codex-1@api`). By default it shows only the **current project** — use
+these bare names as `--to` targets. Pass `--all` to list every project; use the
+fully qualified `name@project` token to target a recipient in another project.
 
 ## Sending and receiving
 
