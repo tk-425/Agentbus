@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -41,6 +42,35 @@ func TestDiscoverCandidatesFiltersByProjectAndMatchesExactCommandBasename(t *tes
 	}
 	if got[1].PaneID != "%2" || got[1].AgentType != "codex" {
 		t.Fatalf("second candidate = %+v, want %%2/codex", got[1])
+	}
+}
+
+// TestDiscoverCandidatesResolvesAgentFromProcessTreeWhenCommandIsRetitled
+// reproduces the tmux discovery bug: claude retitles its process to its version
+// ("2.1.193"), so the pane's surface command matches no agent type, yet the real
+// `claude` process is a direct child of the pane shell. Discovery must fall back
+// to the process subtree and register claude, ignoring the npm/MCP grandchildren.
+func TestDiscoverCandidatesResolvesAgentFromProcessTreeWhenCommandIsRetitled(t *testing.T) {
+	restore := listProcesses
+	defer func() { listProcesses = restore }()
+	// Captured from a live tmux session: shell 90352 -> claude 92080 -> npm 92149.
+	listProcesses = func() ([]procEntry, error) {
+		return []procEntry{
+			{pid: 90352, ppid: 88065, comm: "zsh"},
+			{pid: 92080, ppid: 90352, comm: "claude"},
+			{pid: 92149, ppid: 92080, comm: "npm exec tavily-"},
+		}, nil
+	}
+
+	defs := map[string]agenttypes.Definition{"claude": {ResponseWait: 2}}
+	panes := []multiplexer.Pane{{ID: "%1", CWD: "/repo", Command: "2.1.193", PID: 90352}}
+
+	got := discoverCandidates("/repo", panes, defs, map[string]bool{})
+	if len(got) != 1 {
+		t.Fatalf("discoverCandidates length = %d, want 1", len(got))
+	}
+	if got[0].PaneID != "%1" || got[0].AgentType != "claude" {
+		t.Fatalf("candidate = %+v, want %%1/claude", got[0])
 	}
 }
 
@@ -407,6 +437,39 @@ func TestRunStartIsNoOpWhenBrokerAlreadyRunning(t *testing.T) {
 	}
 }
 
+// TestRunStartAbortsWithoutMultiplexer asserts that foreground start fails with
+// the no-multiplexer error and launches no broker when the current environment is
+// neither tmux nor herdr — detection happens before any broker subprocess spawns,
+// so no port file is written.
+func TestRunStartAbortsWithoutMultiplexer(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// Neither multiplexer signal present: detection must fail.
+	t.Setenv("TMUX", "")
+	t.Setenv("HERDR_ENV", "")
+
+	projectRoot := filepath.Join(home, "repo")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	err = runStart(&cobra.Command{}, nil)
+	if !errors.Is(err, multiplexer.ErrNoMultiplexer) {
+		t.Fatalf("runStart error = %v, want ErrNoMultiplexer", err)
+	}
+	if _, statErr := os.Stat(broker.DefaultPortFile()); !os.IsNotExist(statErr) {
+		t.Fatalf("port file exists after aborted start: stat err = %v, want not-exist", statErr)
+	}
+}
+
 // TestResolvePaneIDReadsHerdrPaneID guards the regression where resolvePaneID
 // read the nonexistent HERDR_PANE instead of the HERDR_PANE_ID herdr actually
 // exports, leaving whoami/register unable to identify a pane under herdr.
@@ -483,6 +546,9 @@ func TestRunListPrintsRegisteredAgentsAcrossProjects(t *testing.T) {
 		t.Fatalf("RegisterType proj-b: %v", err)
 	}
 
+	listAll = true
+	defer func() { listAll = false }()
+
 	out := captureStdout(t, func() {
 		if err := runList(&cobra.Command{}, nil); err != nil {
 			t.Fatalf("runList: %v", err)
@@ -490,6 +556,104 @@ func TestRunListPrintsRegisteredAgentsAcrossProjects(t *testing.T) {
 	})
 	if got := strings.TrimSpace(out); got != "claude-1@proj-a\ncodex-1@proj-b" {
 		t.Fatalf("list output = %q", got)
+	}
+}
+
+func TestRunListScopesToCurrentProjectByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectRoot := filepath.Join(home, "proj-a")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	r := registry.New()
+	r.AttachDB(d, 7373)
+	if _, err := r.RegisterType("proj-a", "claude", "%1"); err != nil {
+		t.Fatalf("RegisterType proj-a: %v", err)
+	}
+	if _, err := r.RegisterType("proj-b", "codex", "%2"); err != nil {
+		t.Fatalf("RegisterType proj-b: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runList(&cobra.Command{}, nil); err != nil {
+			t.Fatalf("runList: %v", err)
+		}
+	})
+	if got := strings.TrimSpace(out); got != "claude-1@proj-a" {
+		t.Fatalf("scoped list output = %q, want only current project", got)
+	}
+}
+
+// TestRunListPrintsNothingWhenNoInstanceInCurrentProject pins the spec success
+// criterion that a scoped list with no matching instance prints nothing and exits
+// zero — the registry holds only an instance under another project.
+func TestRunListPrintsNothingWhenNoInstanceInCurrentProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectRoot := filepath.Join(home, "proj-empty")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	r := registry.New()
+	r.AttachDB(d, 7373)
+	if _, err := r.RegisterType("proj-a", "claude", "%1"); err != nil {
+		t.Fatalf("RegisterType proj-a: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runList(&cobra.Command{}, nil); err != nil {
+			t.Fatalf("runList: %v", err)
+		}
+	})
+	if got := strings.TrimSpace(out); got != "" {
+		t.Fatalf("scoped list output = %q, want empty", got)
 	}
 }
 

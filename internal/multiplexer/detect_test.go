@@ -1,48 +1,55 @@
 package multiplexer
 
 import (
-	"os"
-	"path/filepath"
-	"runtime"
+	"errors"
 	"testing"
 )
 
-// fakeHerdrPath returns a temp dir containing an executable named herdr, so
-// Detect's PATH probe succeeds without any real herdr installed.
-func fakeHerdrPath(t *testing.T) string {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("fake-PATH probe is unix-only")
-	}
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "herdr"), []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatalf("write fake herdr: %v", err)
-	}
-	return dir
-}
-
-func TestDetectPrecedence(t *testing.T) {
+// TestDetectKeysOnRuntimeEnvironment covers environment-keyed backend selection:
+// tmux when $TMUX is set, herdr when HERDR_ENV=1, tmux first when both are set,
+// and the no-multiplexer error with no backend when neither is present. Installed
+// binaries never influence the result, so there is no PATH probe to exercise.
+func TestDetectKeysOnRuntimeEnvironment(t *testing.T) {
 	cases := []struct {
-		name      string
-		herdrEnv  string
-		fakeHerdr bool
-		wantHerdr bool
+		name     string
+		tmux     string
+		herdrEnv string
+		want     string // "tmux", "herdr", or "none"
 	}{
-		{"HERDR_ENV=1 selects herdr even without herdr on PATH", "1", false, true},
-		{"herdr on PATH selects herdr without HERDR_ENV", "", true, true},
-		{"neither falls back to tmux", "", false, false},
+		{"TMUX only selects tmux", "/tmp/tmux-1/default,1,0", "", "tmux"},
+		{"HERDR_ENV=1 only selects herdr", "", "1", "herdr"},
+		{"both present selects tmux", "/tmp/tmux-1/default,1,0", "1", "tmux"},
+		{"neither returns no-multiplexer error", "", "", "none"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("TMUX", tc.tmux)
 			t.Setenv("HERDR_ENV", tc.herdrEnv)
-			if tc.fakeHerdr {
-				t.Setenv("PATH", fakeHerdrPath(t))
-			} else {
-				t.Setenv("PATH", t.TempDir()) // empty dir: no herdr, no real backends
-			}
-			mux := Detect()
-			if _, isHerdr := mux.(*Herdr); isHerdr != tc.wantHerdr {
-				t.Fatalf("Detect() = %T, want herdr=%v", mux, tc.wantHerdr)
+
+			mux, err := Detect()
+
+			switch tc.want {
+			case "tmux":
+				if err != nil {
+					t.Fatalf("Detect() error = %v, want nil", err)
+				}
+				if _, ok := mux.(*Tmux); !ok {
+					t.Fatalf("Detect() = %T, want *Tmux", mux)
+				}
+			case "herdr":
+				if err != nil {
+					t.Fatalf("Detect() error = %v, want nil", err)
+				}
+				if _, ok := mux.(*Herdr); !ok {
+					t.Fatalf("Detect() = %T, want *Herdr", mux)
+				}
+			case "none":
+				if !errors.Is(err, ErrNoMultiplexer) {
+					t.Fatalf("Detect() error = %v, want ErrNoMultiplexer", err)
+				}
+				if mux != nil {
+					t.Fatalf("Detect() = %T, want nil backend on error", mux)
+				}
 			}
 		})
 	}
