@@ -546,6 +546,9 @@ func TestRunListPrintsRegisteredAgentsAcrossProjects(t *testing.T) {
 		t.Fatalf("RegisterType proj-b: %v", err)
 	}
 
+	listAll = true
+	defer func() { listAll = false }()
+
 	out := captureStdout(t, func() {
 		if err := runList(&cobra.Command{}, nil); err != nil {
 			t.Fatalf("runList: %v", err)
@@ -553,6 +556,104 @@ func TestRunListPrintsRegisteredAgentsAcrossProjects(t *testing.T) {
 	})
 	if got := strings.TrimSpace(out); got != "claude-1@proj-a\ncodex-1@proj-b" {
 		t.Fatalf("list output = %q", got)
+	}
+}
+
+func TestRunListScopesToCurrentProjectByDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectRoot := filepath.Join(home, "proj-a")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	r := registry.New()
+	r.AttachDB(d, 7373)
+	if _, err := r.RegisterType("proj-a", "claude", "%1"); err != nil {
+		t.Fatalf("RegisterType proj-a: %v", err)
+	}
+	if _, err := r.RegisterType("proj-b", "codex", "%2"); err != nil {
+		t.Fatalf("RegisterType proj-b: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runList(&cobra.Command{}, nil); err != nil {
+			t.Fatalf("runList: %v", err)
+		}
+	})
+	if got := strings.TrimSpace(out); got != "claude-1@proj-a" {
+		t.Fatalf("scoped list output = %q, want only current project", got)
+	}
+}
+
+// TestRunListPrintsNothingWhenNoInstanceInCurrentProject pins the spec success
+// criterion that a scoped list with no matching instance prints nothing and exits
+// zero — the registry holds only an instance under another project.
+func TestRunListPrintsNothingWhenNoInstanceInCurrentProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projectRoot := filepath.Join(home, "proj-empty")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	oldWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer os.Chdir(oldWD)
+	if err := os.Chdir(projectRoot); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+
+	d, err := db.Open(sharedDBPath())
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := d.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	}()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	r := registry.New()
+	r.AttachDB(d, 7373)
+	if _, err := r.RegisterType("proj-a", "claude", "%1"); err != nil {
+		t.Fatalf("RegisterType proj-a: %v", err)
+	}
+
+	out := captureStdout(t, func() {
+		if err := runList(&cobra.Command{}, nil); err != nil {
+			t.Fatalf("runList: %v", err)
+		}
+	})
+	if got := strings.TrimSpace(out); got != "" {
+		t.Fatalf("scoped list output = %q, want empty", got)
 	}
 }
 

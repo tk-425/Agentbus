@@ -332,6 +332,8 @@ func runInbox(cmd *cobra.Command, args []string) error {
 	}
 }
 
+var listAll bool
+
 var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List registered agents",
@@ -354,7 +356,19 @@ func runList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
+
+	localProject := ""
+	if !listAll {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		localProject = filepath.Base(cwd)
+	}
 	for _, inst := range agents {
+		if !listAll && inst.Project != localProject {
+			continue
+		}
 		fmt.Printf("%s@%s\n", inst.Name, inst.Project)
 	}
 	return nil
@@ -694,6 +708,8 @@ func init() {
 	}
 	inboxCmd.Flags().BoolVar(&inboxWait, "wait", false, "block until a message arrives")
 	inboxCmd.Flags().DurationVar(&inboxTimeout, "timeout", 30*time.Second, "max time --wait blocks")
+
+	listCmd.Flags().BoolVar(&listAll, "all", false, "list agents across all projects")
 
 	unregisterCmd.Flags().StringVar(&unregisterName, "name", "", "target Agent instance to remove (name or name@project)")
 	if err := unregisterCmd.MarkFlagRequired("name"); err != nil {
