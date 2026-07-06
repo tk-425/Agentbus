@@ -49,6 +49,8 @@ Read and clear this agent's inbox (drain-on-read — messages are marked read an
 will not appear again). Prints each queued reply as `[reply] from <sender>: <body>`.
 
 - `--wait` — block until at least one message arrives instead of returning empty.
+  For **non-interactive scripts only** — an interactive agent gets the injected
+  `[agentbus]` notification, so it should end its turn rather than block here.
 - `--timeout <duration>` — max time `--wait` blocks (default `30s`, e.g. `120s`).
 
 Reply **bodies are only visible through `inbox`** — they are never typed into the

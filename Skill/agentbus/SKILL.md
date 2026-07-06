@@ -59,10 +59,12 @@ project; use `name@project` to reach another project — a bare name that collid
 across projects silently resolves to just one of them, so qualify it when the
 project matters.
 
-Do not block waiting after sending. The reply routes back automatically; a
-notification announces it (see next section). Large content does not belong in a
-message — bodies are truncated at 32KB. Pass a file path and let the recipient
-read the file.
+Do not block waiting after sending, and do not poll the inbox. After sending,
+tell the human the request is out and then **stop — end your turn**. The reply
+routes back automatically and arrives as an injected `[agentbus]` notification
+(see next section) that re-engages you when it lands; you do not need to stay
+active for it. Large content does not belong in a message — bodies are truncated
+at 32KB. Pass a file path and let the recipient read the file.
 
 ## Receive a reply
 
@@ -82,13 +84,18 @@ agentbus inbox --name claude-2     # prints queued replies, marks them read
 
 The reply *body* is never injected into the pane — reading the inbox is the only
 way to see it. Only one notification fires per reply, so read the inbox when
-prompted rather than waiting for a repeat.
+prompted rather than waiting for a repeat. Do **not** run `agentbus inbox`
+speculatively before the notification appears: it stays empty until the reply
+lands, and looping it just burns turns. Wait for the `[agentbus]` line, then read
+once.
 
-To deliberately block until a reply arrives (e.g. a scripted step that cannot
-proceed without it), add `--wait`:
+`--wait` blocks until a reply arrives. It exists for **non-interactive scripts**
+(e.g. a shell pipeline) that have no way to react to the injected notification.
+As an interactive agent you *do* get that notification, so do not use `--wait` to
+sit and block — end your turn and let the notification re-engage you.
 
 ```bash
-agentbus inbox --name claude-2 --wait --timeout 120s
+agentbus inbox --name claude-2 --wait --timeout 120s   # scripts only, not agents
 ```
 
 ## Answer a request received from another agent
