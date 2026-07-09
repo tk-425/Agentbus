@@ -103,7 +103,9 @@ make uninstall     # remove /usr/local/bin/agentbus
 Run each agent in its own tmux/herdr pane inside the same project directory, then:
 
 ```bash
-# 1. Start the broker (auto-discovers agent panes in this project)
+# 1. Start the broker from inside the project directory you want to coordinate.
+#    The broker is per-project (keyed to the current directory) — it only
+#    discovers panes whose working directory is inside this project.
 agentbus start
 
 # 2. See who's registered
@@ -177,7 +179,7 @@ so `make install` does not install it — copy it separately as above.
 
 | Command | Description |
 | --- | --- |
-| `agentbus start` | Start the broker in the background; auto-discovers agents. Idempotent per project. |
+| `agentbus start` | Start the broker for the **current project** (run it from inside that directory); auto-discovers agents whose CWD is in the project. Idempotent per project. |
 | `agentbus stop` | Stop the broker for the current project. |
 | `agentbus register --name <type> [--pane <id>]` | Register the current pane as an agent, or register an explicit pane ID with `--pane` (auto-suffixes if the name is taken). |
 | `agentbus unregister --name <inst>` | Remove an agent instance from the registry. |
