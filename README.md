@@ -136,6 +136,36 @@ agentbus whoami                      # prints this pane's instance name
 
 ---
 
+## Natural-language skill
+
+The commands below are the low-level interface. You don't have to type them
+yourself — agentbus ships a **skill** (`Skill/agentbus/`) that teaches an AI
+coding agent the whole request/reply workflow, so you can coordinate agents in
+plain language and let the agent run the right commands for you:
+
+> *"Ask the codex agent to run the tests in ./api and report pass/fail."*
+
+The agent resolves its own name (`agentbus whoami`), finds the target
+(`agentbus list`), sends the request, and later reads the reply from its inbox
+when the `[agentbus] new reply …` notification lands — the same steps shown in
+the Quickstart, driven for you.
+
+**Install it** by copying the skill into your agent's skills directory. The
+location depends on the agent; for Claude Code:
+
+```bash
+# user-wide
+cp -R Skill/agentbus ~/.claude/skills/agentbus
+
+# or per-project
+cp -R Skill/agentbus .claude/skills/agentbus
+```
+
+The skill is distributed with the source but isn't part of the compiled binary,
+so `make install` does not install it — copy it separately as above.
+
+---
+
 ## Commands
 
 | Command | Description |
