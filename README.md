@@ -9,8 +9,6 @@ from one agent into another's pane, waits for it to finish, and delivers the
 **reply** back — all through a lightweight local broker and your terminal
 multiplexer (tmux or [herdr](https://github.com/tk-425/herdr)).
 
-Version: **v0.4.5**
-
 ---
 
 ## Why
