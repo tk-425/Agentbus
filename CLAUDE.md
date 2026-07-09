@@ -46,11 +46,12 @@ make uninstall    # removes /usr/local/bin/agentbus
 ```
 agentbus start                        # start broker in background (auto-discovers agents)
 agentbus stop                         # stop broker
-agentbus register --name <agent>      # register current tmux pane (auto-suffixes if name taken)
+agentbus register --name <agent>      # register current pane (auto-suffixes if name taken)
 agentbus unregister --name <agent>    # remove agent from registry
 agentbus whoami                       # print the current pane's registered instance name
 agentbus send --from <agent> --to <agent> <message>  # send message (replies route back to --from)
-agentbus inbox [--wait] [--timeout]   # read inbox (marks as read; --wait blocks until message arrives)
+agentbus reply <request-id> <message> # send a terminal reply back to the original requester
+agentbus inbox --name <agent> [--wait] [--timeout]   # read inbox (marks as read; --wait blocks until message arrives)
 agentbus list                         # list registered agents
 agentbus status                       # show statusline data
 agentbus log                          # show recent message history
@@ -69,6 +70,7 @@ All runtime state lives in `~/.agentbus/`:
 ├── config.json       # global user config (multiplexer preference, etc.)
 ├── agentbus.db       # SQLite DB — brokers, agents, messages
 ├── agents.json       # agent type definitions (prompt_pattern, response_wait)
+├── port              # current broker port
 └── logs/
     ├── project-A.log # broker log for project-A
     └── project-B.log # broker log for project-B
@@ -81,9 +83,10 @@ All runtime state lives in `~/.agentbus/`:
 - Broker runs on a dynamic port (starting at 7373); port written to `~/.agentbus/port`
 - `agentbus start` runs continuous auto-discovery (immediately on startup, then reconciling on an interval)
 - `agentbus start` is idempotent: a second start in the same project reports the live broker instead of launching another
-- Watchers auto-reconnect on broker restart (retry every 2s, up to 30s)
+- Watchers run inside the broker process and restart with the broker
 - `agentbus inbox` returns immediately by default; `--wait` blocks for scripted use
 - Reply arrival is announced by injecting a one-time notification into the requester's pane when idle; reply bodies are never injected — agents read them via `agentbus inbox`
+- Recipients return answers explicitly with `agentbus reply <request-id> <message>`; watchers no longer scrape pane output to build replies
 - Message responses hard-truncated at 32KB; agents should pass file paths for large content
 - Instance names are never reused within a broker session
 - Natural language skill is distributed separately from the binary
