@@ -145,10 +145,17 @@ plain language and let the agent run the right commands for you:
 
 > *"Ask the codex agent to run the tests in ./api and report pass/fail."*
 
+Agents in **other projects** work too — just name the project ("from
+Project-1", "in Project-1") and the agent scopes across all of them:
+
+> *"Ask the codex agent from Project-1 to run its unit tests and report only
+> pass/fail."*
+
 The agent resolves its own name (`agentbus whoami`), finds the target
-(`agentbus list`), sends the request, and later reads the reply from its inbox
-when the `[agentbus] new reply …` notification lands — the same steps shown in
-the Quickstart, driven for you.
+(`agentbus list`, or `agentbus list --all` when another project is named), sends
+the request — using the fully qualified `codex-1@Project-1` for a cross-project
+target — and later reads the reply from its inbox when the `[agentbus] new reply
+…` notification lands — the same steps shown in the Quickstart, driven for you.
 
 **Install it** by copying the skill into your agent's skills directory. The
 location depends on the agent; for Claude Code:
