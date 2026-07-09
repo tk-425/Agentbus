@@ -9,7 +9,7 @@ from one agent into another's pane, waits for it to finish, and delivers the
 **reply** back — all through a lightweight local broker and your terminal
 multiplexer (tmux or [herdr](https://github.com/tk-425/herdr)).
 
-Version: **v0.4.2**
+Version: **v0.4.5**
 
 ---
 
@@ -58,7 +58,7 @@ sequenceDiagram
 
     C->>B: send request
     B->>K: inject request (when idle)
-    K-->>B: captured reply
+    K->>B: agentbus reply <request-id> <message>
     B-->>C: reply to inbox + one-line notification
     Note over C: reads reply via `agentbus inbox`
 ```
@@ -66,7 +66,7 @@ sequenceDiagram
 - A **broker** runs per project on a dynamic local port (starting at `7373`).
 - The broker discovers agent panes automatically and keeps a shared registry.
 - Each registered agent gets a **watcher** that injects queued requests when the
-  agent is **idle** and returns its output as a reply.
+  agent is **idle** and announces newly arrived replies to the requester.
 - State (brokers, agents, message history) is stored in a shared SQLite database.
 
 ---
@@ -111,12 +111,19 @@ agentbus list
 #   claude-1@myproject
 #   codex-1@myproject
 
-# 3. Have one agent send a request to another
+# 3. Learn the sender's own instance name
+agentbus whoami
+#   codex-1
+
+# 4. Have one agent send a request to another
 agentbus send --from codex-1 --to claude-1 "Review internal/broker/routing.go for races"
 
-# 4. The requester reads the reply from its inbox
+# 5. The recipient finishes by running the injected reply command
+agentbus reply abc123 "No race found; queue access is serialized."
+
+# 6. The requester reads the reply from its inbox
 agentbus inbox --name codex-1
-#   [reply] from claude-1: <captured output>
+#   [reply] from claude-1: No race found; queue access is serialized.
 ```
 
 Agents can also register themselves explicitly if auto-discovery doesn't pick
@@ -139,6 +146,7 @@ agentbus whoami                      # prints this pane's instance name
 | `agentbus unregister --name <inst>` | Remove an agent instance from the registry. |
 | `agentbus whoami` | Print the instance name registered for the current pane. |
 | `agentbus send --from <inst> --to <inst> <message>` | Send a request; the reply routes back to `--from`. |
+| `agentbus reply <request-id> <message>` | Answer a received request; routes the terminal reply back to the original requester. |
 | `agentbus inbox --name <inst> [--wait] [--timeout <dur>]` | Read pending messages (marks them read). `--wait` blocks until one arrives. |
 | `agentbus list` | List registered agent instances (`name@project`). |
 | `agentbus status` | Print statusline data (broker up/down, agent count, history, version). |
@@ -174,11 +182,13 @@ All runtime state lives under `~/.agentbus/`:
 - `agentbus start` runs continuous auto-discovery — immediately on startup, then
   reconciling on an interval — and is idempotent: a second start in the same
   project reports the live broker instead of launching another.
-- Watchers auto-reconnect on broker restart.
+- Watchers run inside the broker process and are restarted with the broker.
 - `agentbus inbox` returns immediately by default; pass `--wait` for scripted use.
 - Reply arrival is announced by injecting a one-time notification into the
   requester's pane while it's idle. Reply *bodies* are never injected — agents
   read them via `agentbus inbox`.
+- Recipients return answers explicitly with `agentbus reply <request-id> <message>`;
+  watchers no longer scrape pane output to build replies.
 - Message responses are hard-truncated at 32 KB; pass file paths for large
   content.
 - Instance names are never reused within a broker session.
@@ -201,7 +211,7 @@ internal/
 ├── multiplexer/     # tmux + herdr backends, auto-detection
 ├── registry/        # shared agent registry
 ├── version/         # version string
-└── watcher/         # per-agent request delivery / reply capture
+└── watcher/         # per-agent request delivery / reply notifications
 Skill/agentbus/      # natural-language skill (distributed separately)
 Makefile
 ```
