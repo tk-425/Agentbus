@@ -58,7 +58,7 @@ sequenceDiagram
 
     C->>B: send request
     B->>K: inject request (when idle)
-    K->>B: agentbus reply <request-id> <message>
+    K->>B: agentbus reply request-id "message"
     B-->>C: reply to inbox + one-line notification
     Note over C: reads reply via `agentbus inbox`
 ```
@@ -118,7 +118,7 @@ agentbus whoami
 # 4. Have one agent send a request to another
 agentbus send --from codex-1 --to claude-1 "Review internal/broker/routing.go for races"
 
-# 5. The recipient finishes by running the injected reply command
+# 5. In the recipient pane, finish by running the injected reply command
 agentbus reply abc123 "No race found; queue access is serialized."
 
 # 6. The requester reads the reply from its inbox
@@ -142,17 +142,17 @@ agentbus whoami                      # prints this pane's instance name
 | --- | --- |
 | `agentbus start` | Start the broker in the background; auto-discovers agents. Idempotent per project. |
 | `agentbus stop` | Stop the broker for the current project. |
-| `agentbus register --name <type>` | Register the current pane as an agent (auto-suffixes if the name is taken). |
+| `agentbus register --name <type> [--pane <id>]` | Register the current pane as an agent, or register an explicit pane ID with `--pane` (auto-suffixes if the name is taken). |
 | `agentbus unregister --name <inst>` | Remove an agent instance from the registry. |
 | `agentbus whoami` | Print the instance name registered for the current pane. |
 | `agentbus send --from <inst> --to <inst> <message>` | Send a request; the reply routes back to `--from`. |
 | `agentbus reply <request-id> <message>` | Answer a received request; routes the terminal reply back to the original requester. |
 | `agentbus inbox --name <inst> [--wait] [--timeout <dur>]` | Read pending messages (marks them read). `--wait` blocks until one arrives. |
-| `agentbus list` | List registered agent instances (`name@project`). |
+| `agentbus list [--all]` | List registered agent instances (`name@project`). Use `--all` to include every project instead of only the current one. |
 | `agentbus status` | Print statusline data (broker up/down, agent count, history, version). |
 | `agentbus log` | Show recent message history. |
 | `agentbus discover` | Scan panes and register agents whose CWD is inside the project. |
-| `agentbus add-agent --name <type>` | Add a custom agent type to `agents.json`. |
+| `agentbus add-agent --name <type> [--prompt-pattern <regex>] [--response-wait <seconds>]` | Add a custom agent type to `agents.json`, optionally setting its prompt pattern and response wait. |
 | `agentbus version` | Print the agentbus version. |
 
 Run `agentbus <command> --help` for full flags.
