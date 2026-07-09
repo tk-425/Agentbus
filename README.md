@@ -83,7 +83,26 @@ sequenceDiagram
 
 ## Install
 
-Build and install the binary to `/usr/local/bin`:
+### Prebuilt binary (recommended)
+
+Download a prebuilt archive for your platform from the
+[GitHub Releases](https://github.com/tk-425/Agentbus/releases) page — no Go
+toolchain required. Archives are published for macOS and Linux on both `amd64`
+and `arm64`.
+
+```bash
+# Pick the archive matching your OS/arch, e.g. macOS arm64:
+tar -xzf agentbus_*_darwin_arm64.tar.gz         # extract the agentbus binary
+sudo mv agentbus /usr/local/bin/agentbus        # put it on your PATH
+agentbus version                                # confirm the installed version
+```
+
+Each release also ships a `checksums.txt`; verify your download against it
+before extracting (e.g. `sha256sum -c checksums.txt`).
+
+### Build from source
+
+Requires Go 1.26+. Build and install the binary to `/usr/local/bin`:
 
 ```bash
 make install       # builds ./agentbus and moves it to /usr/local/bin/agentbus
@@ -92,9 +111,31 @@ make install       # builds ./agentbus and moves it to /usr/local/bin/agentbus
 Other Makefile targets:
 
 ```bash
-make build         # compile the binary to ./agentbus
+make build         # compile the binary to ./agentbus (version from `git describe`)
 make uninstall     # remove /usr/local/bin/agentbus
 ```
+
+A source build embeds a `git describe`-derived development version, so
+`agentbus version` reflects the exact commit it was built from.
+
+---
+
+## Releasing
+
+Releases are automated with [GoReleaser](https://goreleaser.com/): cutting a
+release is just pushing a semver tag.
+
+```bash
+git tag v0.5.0
+git push --tags
+```
+
+The pushed tag triggers the `release` GitHub Actions workflow, which runs
+GoReleaser to cross-compile the macOS/Linux × amd64/arm64 archives, generate a
+`checksums.txt`, build changelog notes from the conventional-commit history, and
+publish them all as a GitHub Release. The tag is the single source of truth for
+the released version — it is injected at build time, with no manual version edit
+required to cut a release.
 
 ---
 
