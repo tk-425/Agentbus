@@ -61,8 +61,8 @@ func (b *Broker) AttachDB(db *sql.DB) {
 
 // Register binds a bare agent type to a pane in project and returns the
 // auto-suffixed Agent instance name.
-func (b *Broker) Register(project, agentType, paneID string) (string, error) {
-	return b.Registry.RegisterType(project, agentType, paneID)
+func (b *Broker) Register(project, agentType, paneID string, backend ...string) (string, error) {
+	return b.Registry.RegisterType(project, agentType, paneID, backend...)
 }
 
 // Send enqueues msg for its To recipient, truncating an over-cap body once.

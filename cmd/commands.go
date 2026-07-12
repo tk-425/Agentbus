@@ -443,7 +443,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		if !listAll && inst.Project != localProject {
 			continue
 		}
-		fmt.Printf("%s@%s\n", inst.Name, inst.Project)
+		fmt.Printf("%s@%s [%s]\n", inst.Name, inst.Project, inst.Backend)
 	}
 	return nil
 }
@@ -599,8 +599,7 @@ func runDiscover(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	mux, err := multiplexer.Detect()
-	if err != nil {
+	if _, err := multiplexer.Detect(); err != nil {
 		return err
 	}
 
@@ -608,8 +607,8 @@ func runDiscover(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	created, err := discoverWith(projectRoot, mux, defs, bound, func(agentType, paneID string) (string, error) {
-		return c.Register(localProject, agentType, paneID)
+	created, err := discoverWithBackends(projectRoot, multiplexer.Backends(), defs, bound, func(agentType, paneID, backend string) (string, error) {
+		return c.Register(localProject, agentType, paneID, backend)
 	})
 	if err != nil {
 		return err
@@ -623,24 +622,57 @@ func runDiscover(cmd *cobra.Command, args []string) error {
 type discoverCandidate struct {
 	PaneID    string
 	AgentType string
+	Backend   string
 }
 
 func discoverWith(projectRoot string, mux multiplexer.Multiplexer, defs map[string]agenttypes.Definition, bound map[string]bool, register func(agentType, paneID string) (string, error)) ([]string, error) {
-	panes, err := mux.ListPanes()
-	if err != nil {
-		return nil, err
-	}
-	candidates := discoverCandidates(projectRoot, panes, defs, bound)
+	backend := multiplexer.NameOf(mux)
+	return discoverWithBackends(projectRoot, []multiplexer.Backend{{Name: backend, Multiplexer: mux}}, defs, bound, func(agentType, paneID, _ string) (string, error) {
+		return register(agentType, paneID)
+	})
+}
+
+func discoverWithBackends(projectRoot string, backends []multiplexer.Backend, defs map[string]agenttypes.Definition, bound map[string]bool, register func(agentType, paneID, backend string) (string, error)) ([]string, error) {
+	candidates := discoverCandidatesFromBackends(projectRoot, backends, defs, bound)
 	out := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
-		name, err := register(candidate.AgentType, candidate.PaneID)
+		name, err := register(candidate.AgentType, candidate.PaneID, candidate.Backend)
 		if err != nil {
 			return nil, err
 		}
-		bound[candidate.PaneID] = true
+		if candidate.Backend == "" {
+			bound[candidate.PaneID] = true
+		} else {
+			bound[discoveryKey(candidate.Backend, candidate.PaneID)] = true
+		}
 		out = append(out, name)
 	}
 	return out, nil
+}
+
+func discoverCandidatesFromBackends(projectRoot string, backends []multiplexer.Backend, defs map[string]agenttypes.Definition, bound map[string]bool) []discoverCandidate {
+	var candidates []discoverCandidate
+	for _, backend := range backends {
+		panes, err := backend.Multiplexer.ListPanes()
+		if err != nil {
+			continue
+		}
+		backendBound := make(map[string]bool, len(panes))
+		for _, pane := range panes {
+			if bound[pane.ID] || bound[discoveryKey(backend.Name, pane.ID)] {
+				backendBound[pane.ID] = true
+			}
+		}
+		for _, candidate := range discoverCandidates(projectRoot, panes, defs, backendBound) {
+			candidate.Backend = backend.Name
+			candidates = append(candidates, candidate)
+		}
+	}
+	return candidates
+}
+
+func discoveryKey(backend, paneID string) string {
+	return backend + "\x00" + paneID
 }
 
 func discoverCandidates(projectRoot string, panes []multiplexer.Pane, defs map[string]agenttypes.Definition, bound map[string]bool) []discoverCandidate {

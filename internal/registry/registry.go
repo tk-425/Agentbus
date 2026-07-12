@@ -25,6 +25,7 @@ type Instance struct {
 	Name       string
 	Project    string
 	PaneID     string
+	Backend    string
 	BrokerPort int
 }
 
@@ -111,7 +112,7 @@ func (r *Registry) Resolve(target, localProject string) (Instance, error) {
 // auto-suffixed Agent instance name (claude -> claude-1, then claude-2). The
 // suffix counter is monotonic per (project, type), so a name is never reused
 // within a session.
-func (r *Registry) RegisterType(project, agentType, paneID string) (string, error) {
+func (r *Registry) RegisterType(project, agentType, paneID string, backend ...string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ckey := project + "\x00" + agentType
@@ -119,6 +120,9 @@ func (r *Registry) RegisterType(project, agentType, paneID string) (string, erro
 	name := fmt.Sprintf("%s-%d", agentType, r.counters[ckey])
 	key := instanceKey{project, name}
 	inst := Instance{Name: name, Project: project, PaneID: paneID}
+	if len(backend) > 0 {
+		inst.Backend = backend[0]
+	}
 	r.instances[key] = inst
 	r.byPane[paneID] = key
 	r.writeThrough(inst)
@@ -159,13 +163,14 @@ func (r *Registry) writeThrough(inst Instance) {
 		return
 	}
 	r.db.Exec(`
-		INSERT INTO agents (project, name, broker_port, pane_id, registered_at)
-		VALUES (?, ?, ?, ?, ?)
+		INSERT INTO agents (project, name, broker_port, pane_id, backend, registered_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(project, name) DO UPDATE SET
 			broker_port   = excluded.broker_port,
 			pane_id       = excluded.pane_id,
+			backend       = excluded.backend,
 			registered_at = excluded.registered_at`,
-		inst.Project, inst.Name, r.brokerPort, inst.PaneID,
+		inst.Project, inst.Name, r.brokerPort, inst.PaneID, inst.Backend,
 		time.Now().UTC().Format(time.RFC3339))
 }
 
@@ -181,9 +186,9 @@ func (r *Registry) LookupShared(project, name string) (Instance, bool) {
 	}
 	var inst Instance
 	err := db.QueryRow(
-		`SELECT project, name, broker_port, pane_id FROM agents WHERE project = ? AND name = ?`,
+		`SELECT project, name, broker_port, pane_id, backend FROM agents WHERE project = ? AND name = ?`,
 		project, name,
-	).Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID)
+	).Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID, &inst.Backend)
 	if err != nil {
 		return Instance{}, false
 	}
@@ -200,7 +205,7 @@ func (r *Registry) ListShared() ([]Instance, error) {
 		return nil, nil
 	}
 	rows, err := db.Query(`
-		SELECT project, name, broker_port, pane_id
+		SELECT project, name, broker_port, pane_id, backend
 		FROM agents
 		ORDER BY project, name
 	`)
@@ -212,7 +217,7 @@ func (r *Registry) ListShared() ([]Instance, error) {
 	var out []Instance
 	for rows.Next() {
 		var inst Instance
-		if err := rows.Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID); err != nil {
+		if err := rows.Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID, &inst.Backend); err != nil {
 			return nil, fmt.Errorf("scan shared agent: %w", err)
 		}
 		out = append(out, inst)
@@ -250,9 +255,9 @@ func (r *Registry) lookupSharedByName(name string) (Instance, bool) {
 	}
 	var inst Instance
 	err := db.QueryRow(
-		`SELECT project, name, broker_port, pane_id FROM agents WHERE name = ? ORDER BY project LIMIT 1`,
+		`SELECT project, name, broker_port, pane_id, backend FROM agents WHERE name = ? ORDER BY project LIMIT 1`,
 		name,
-	).Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID)
+	).Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID, &inst.Backend)
 	if err != nil {
 		return Instance{}, false
 	}
@@ -272,9 +277,9 @@ func (r *Registry) LookupSharedByPane(paneID string) (Instance, bool) {
 	}
 	var inst Instance
 	err := db.QueryRow(
-		`SELECT project, name, broker_port, pane_id FROM agents WHERE pane_id = ? ORDER BY project LIMIT 1`,
+		`SELECT project, name, broker_port, pane_id, backend FROM agents WHERE pane_id = ? ORDER BY project LIMIT 1`,
 		paneID,
-	).Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID)
+	).Scan(&inst.Project, &inst.Name, &inst.BrokerPort, &inst.PaneID, &inst.Backend)
 	if err != nil {
 		return Instance{}, false
 	}

@@ -139,6 +139,91 @@ func TestDiscoverUsesMockPanesAndRegistersEligibleOnesOnce(t *testing.T) {
 	}
 }
 
+type failingMultiplexer struct {
+	*multiplexer.Mock
+}
+
+func (failingMultiplexer) ListPanes() ([]multiplexer.Pane, error) {
+	return nil, errors.New("backend unavailable")
+}
+
+func TestDiscoverWithBackendsAggregatesAndSkipsUnavailableBackends(t *testing.T) {
+	defs := map[string]agenttypes.Definition{
+		"claude": {ResponseWait: 2},
+		"codex":  {ResponseWait: 2},
+	}
+	tmux := multiplexer.NewMock()
+	tmux.SetPanes([]multiplexer.Pane{{ID: "%1", CWD: "/repo", Command: "claude"}})
+	herdr := multiplexer.NewMock()
+	herdr.SetPanes([]multiplexer.Pane{{ID: "w1:p1", CWD: "/repo", Command: "codex"}})
+	failed := failingMultiplexer{Mock: multiplexer.NewMock()}
+
+	var registered []string
+	created, err := discoverWithBackends("/repo", []multiplexer.Backend{
+		{Name: "tmux", Multiplexer: tmux},
+		{Name: "herdr", Multiplexer: herdr},
+		{Name: "missing", Multiplexer: failed},
+	}, defs, map[string]bool{}, func(agentType, paneID, backend string) (string, error) {
+		registered = append(registered, agentType+":"+paneID+":"+backend)
+		return agentType + "-1", nil
+	})
+	if err != nil {
+		t.Fatalf("discoverWithBackends: %v", err)
+	}
+	if len(created) != 2 || len(registered) != 2 {
+		t.Fatalf("created=%v registered=%v, want two candidates", created, registered)
+	}
+	if registered[0] != "claude:%1:tmux" || registered[1] != "codex:w1:p1:herdr" {
+		t.Fatalf("registered=%v, want backend-tagged candidates", registered)
+	}
+}
+
+func TestAutoDiscoverRetagsExistingAgentWhenBackendChanges(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	projectRoot := filepath.Join(home, "repo")
+	if err := os.MkdirAll(projectRoot, 0o700); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	b := broker.New()
+	b.Registry.SetLocalProject("repo")
+	name, err := b.Registry.RegisterType("repo", "claude", "%1", "tmux")
+	if err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+	tmux := multiplexer.NewMock()
+	tmux.SetPanes([]multiplexer.Pane{{ID: "%1", CWD: projectRoot, Command: "claude"}})
+	if err := autoDiscoverOnceWithBackends(projectRoot, b, []multiplexer.Backend{{Name: "tmux", Multiplexer: tmux}}); err != nil {
+		t.Fatalf("same-backend discovery: %v", err)
+	}
+	inst, ok := b.Registry.Lookup(name)
+	if !ok || inst.Backend != "tmux" {
+		t.Fatalf("same-backend instance = %+v ok=%v, want tmux", inst, ok)
+	}
+
+	herdr := multiplexer.NewMock()
+	herdr.SetPanes([]multiplexer.Pane{{ID: "%1", CWD: projectRoot, Command: "claude"}})
+	if err := autoDiscoverOnceWithBackends(projectRoot, b, []multiplexer.Backend{{Name: "herdr", Multiplexer: herdr}}); err != nil {
+		t.Fatalf("changed-backend discovery: %v", err)
+	}
+	instances := b.Registry.All()
+	if len(instances) != 1 || instances[0].Backend != "herdr" {
+		t.Fatalf("re-tagged instances = %+v, want one herdr instance", instances)
+	}
+}
+
+func TestBackendForInstanceUsesRecordedBackend(t *testing.T) {
+	fallback := multiplexer.NewMock()
+	got := backendForInstance(registry.Instance{Backend: "herdr"}, fallback)
+	if _, ok := got.(*multiplexer.Herdr); !ok {
+		t.Fatalf("backendForInstance returned %T, want *multiplexer.Herdr", got)
+	}
+	if got = backendForInstance(registry.Instance{Backend: "unknown"}, fallback); got != fallback {
+		t.Fatalf("unknown backend should use fallback, got %T", got)
+	}
+}
+
 func TestAutoDiscoverOnceRegistersPreexistingEligiblePanes(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -521,10 +606,10 @@ func TestRunListPrintsRegisteredAgentsAcrossProjects(t *testing.T) {
 
 	r := registry.New()
 	r.AttachDB(d, 7373)
-	if _, err := r.RegisterType("proj-a", "claude", "%1"); err != nil {
+	if _, err := r.RegisterType("proj-a", "claude", "%1", "tmux"); err != nil {
 		t.Fatalf("RegisterType proj-a: %v", err)
 	}
-	if _, err := r.RegisterType("proj-b", "codex", "%2"); err != nil {
+	if _, err := r.RegisterType("proj-b", "codex", "%2", "herdr"); err != nil {
 		t.Fatalf("RegisterType proj-b: %v", err)
 	}
 
@@ -536,7 +621,7 @@ func TestRunListPrintsRegisteredAgentsAcrossProjects(t *testing.T) {
 			t.Fatalf("runList: %v", err)
 		}
 	})
-	if got := strings.TrimSpace(out); got != "claude-1@proj-a\ncodex-1@proj-b" {
+	if got := strings.TrimSpace(out); got != "claude-1@proj-a [tmux]\ncodex-1@proj-b [herdr]" {
 		t.Fatalf("list output = %q", got)
 	}
 }
@@ -566,10 +651,10 @@ func TestRunListScopesToCurrentProjectByDefault(t *testing.T) {
 
 	r := registry.New()
 	r.AttachDB(d, 7373)
-	if _, err := r.RegisterType("proj-a", "claude", "%1"); err != nil {
+	if _, err := r.RegisterType("proj-a", "claude", "%1", "tmux"); err != nil {
 		t.Fatalf("RegisterType proj-a: %v", err)
 	}
-	if _, err := r.RegisterType("proj-b", "codex", "%2"); err != nil {
+	if _, err := r.RegisterType("proj-b", "codex", "%2", "herdr"); err != nil {
 		t.Fatalf("RegisterType proj-b: %v", err)
 	}
 
@@ -578,7 +663,7 @@ func TestRunListScopesToCurrentProjectByDefault(t *testing.T) {
 			t.Fatalf("runList: %v", err)
 		}
 	})
-	if got := strings.TrimSpace(out); got != "claude-1@proj-a" {
+	if got := strings.TrimSpace(out); got != "claude-1@proj-a [tmux]" {
 		t.Fatalf("scoped list output = %q, want only current project", got)
 	}
 }

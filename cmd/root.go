@@ -15,6 +15,7 @@ import (
 	"github.com/tk-425/agentbus/internal/client"
 	"github.com/tk-425/agentbus/internal/db"
 	"github.com/tk-425/agentbus/internal/multiplexer"
+	"github.com/tk-425/agentbus/internal/registry"
 	versionpkg "github.com/tk-425/agentbus/internal/version"
 	"github.com/tk-425/agentbus/internal/watcher"
 )
@@ -92,7 +93,7 @@ func autoDiscoverLoop(ctx context.Context, projectRoot string, b *broker.Broker,
 	ticker := time.NewTicker(watcherPoll)
 	defer ticker.Stop()
 	for {
-		if err := autoDiscoverOnce(projectRoot, b, mux); err != nil {
+		if err := autoDiscoverOnceWithBackends(projectRoot, b, multiplexer.Backends()); err != nil {
 			fmt.Fprintf(os.Stderr, "auto-discover: %v\n", err)
 		}
 		select {
@@ -104,18 +105,21 @@ func autoDiscoverLoop(ctx context.Context, projectRoot string, b *broker.Broker,
 }
 
 func autoDiscoverOnce(projectRoot string, b *broker.Broker, mux multiplexer.Multiplexer) error {
+	backend := multiplexer.NameOf(mux)
+	return autoDiscoverOnceWithBackends(projectRoot, b, []multiplexer.Backend{{Name: backend, Multiplexer: mux}})
+}
+
+func autoDiscoverOnceWithBackends(projectRoot string, b *broker.Broker, backends []multiplexer.Backend) error {
 	defs, err := loadAgentDefinitions()
 	if err != nil {
 		return err
 	}
 	localProject := filepath.Base(projectRoot)
-	panes, err := mux.ListPanes()
-	if err != nil {
-		return err
-	}
-	candidates := discoverCandidates(projectRoot, panes, defs, map[string]bool{})
+	candidates := discoverCandidatesFromBackends(projectRoot, backends, defs, map[string]bool{})
+	candidateByKey := make(map[string]discoverCandidate, len(candidates))
 	candidateByPane := make(map[string]discoverCandidate, len(candidates))
 	for _, candidate := range candidates {
+		candidateByKey[discoveryKey(candidate.Backend, candidate.PaneID)] = candidate
 		candidateByPane[candidate.PaneID] = candidate
 	}
 
@@ -123,8 +127,11 @@ func autoDiscoverOnce(projectRoot string, b *broker.Broker, mux multiplexer.Mult
 		if inst.Project != localProject || inst.PaneID == "" {
 			continue
 		}
-		candidate, ok := candidateByPane[inst.PaneID]
-		if !ok || !strings.HasPrefix(inst.Name, candidate.AgentType+"-") {
+		candidate, ok := candidateByKey[discoveryKey(inst.Backend, inst.PaneID)]
+		if inst.Backend == "" {
+			candidate, ok = candidateByPane[inst.PaneID]
+		}
+		if !ok || inst.Backend != candidate.Backend || !strings.HasPrefix(inst.Name, candidate.AgentType+"-") {
 			b.Registry.Unregister(inst.Project, inst.Name)
 		}
 	}
@@ -132,11 +139,15 @@ func autoDiscoverOnce(projectRoot string, b *broker.Broker, mux multiplexer.Mult
 	bound := map[string]bool{}
 	for _, inst := range b.Registry.All() {
 		if inst.Project == localProject && inst.PaneID != "" {
-			bound[inst.PaneID] = true
+			if inst.Backend == "" {
+				bound[inst.PaneID] = true
+			} else {
+				bound[discoveryKey(inst.Backend, inst.PaneID)] = true
+			}
 		}
 	}
-	_, err = discoverWith(projectRoot, mux, defs, bound, func(agentType, paneID string) (string, error) {
-		return b.Register(localProject, agentType, paneID)
+	_, err = discoverWithBackends(projectRoot, backends, defs, bound, func(agentType, paneID, backend string) (string, error) {
+		return b.Register(localProject, agentType, paneID, backend)
 	})
 	return err
 }
@@ -163,10 +174,18 @@ func superviseWatchers(ctx context.Context, b *broker.Broker, mux multiplexer.Mu
 					continue
 				}
 				watched[inst.Name] = true
-				go watchLoop(ctx, inst.Name, inst.PaneID, mux, c)
+				instanceMux := backendForInstance(inst, mux)
+				go watchLoop(ctx, inst.Name, inst.PaneID, instanceMux, c)
 			}
 		}
 	}
+}
+
+func backendForInstance(inst registry.Instance, fallback multiplexer.Multiplexer) multiplexer.Multiplexer {
+	if resolved, ok := multiplexer.For(inst.Backend); ok {
+		return resolved
+	}
+	return fallback
 }
 
 // watchLoop delivers Requests for one Agent instance until ctx is cancelled,

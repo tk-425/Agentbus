@@ -137,6 +137,28 @@ func TestListSharedShowsCrossProjectAgentInstances(t *testing.T) {
 	}
 }
 
+func TestSharedRegistryRoundTripsBackend(t *testing.T) {
+	d, err := db.Open(filepath.Join(t.TempDir(), "agentbus.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer d.Close()
+	if err := db.Migrate(d); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+
+	r := New()
+	r.AttachDB(d, 7373)
+	name, err := r.RegisterType("proj", "claude", "%1", "tmux")
+	if err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+	inst, ok := r.LookupShared("proj", name)
+	if !ok || inst.Backend != "tmux" {
+		t.Fatalf("LookupShared = %+v ok=%v, want backend tmux", inst, ok)
+	}
+}
+
 // TestLookupSharedByPaneResolvesFromDB: a fresh registry with empty in-memory
 // maps (as every out-of-process CLI invocation has) still resolves a pane to
 // its Agent instance name through the shared DB — the identity path `whoami`
