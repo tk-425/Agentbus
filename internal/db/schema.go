@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tk-425/agentbus/internal/message"
@@ -24,6 +25,7 @@ CREATE TABLE IF NOT EXISTS agents (
 	name          TEXT,
 	broker_port   INTEGER,
 	pane_id       TEXT,
+	backend       TEXT,
 	registered_at TEXT,
 	PRIMARY KEY (project, name)
 );
@@ -46,6 +48,9 @@ CREATE TABLE IF NOT EXISTS messages (
 func Migrate(db *sql.DB) error {
 	if _, err := db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate schema: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE agents ADD COLUMN backend TEXT`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+		return fmt.Errorf("migrate agents backend: %w", err)
 	}
 	return nil
 }

@@ -29,6 +29,7 @@ type registerRequest struct {
 	Project   string `json:"project"`
 	AgentType string `json:"agent_type"`
 	PaneID    string `json:"pane_id"`
+	Backend   string `json:"backend"`
 }
 
 type registerResponse struct {
@@ -45,7 +46,7 @@ func (b *Broker) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request body", http.StatusBadRequest)
 		return
 	}
-	name, err := b.Register(req.Project, req.AgentType, req.PaneID)
+	name, err := b.Register(req.Project, req.AgentType, req.PaneID, req.Backend)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

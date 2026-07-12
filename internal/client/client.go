@@ -51,13 +51,17 @@ func Dial(portFile string) (*Client, error) {
 }
 
 // Register binds a bare agent type to a pane and returns the instance name.
-func (c *Client) Register(project, agentType, paneID string) (string, error) {
+func (c *Client) Register(project, agentType, paneID string, backend ...string) (string, error) {
 	if c.broker != nil {
-		return c.broker.Register(project, agentType, paneID)
+		return c.broker.Register(project, agentType, paneID, backend...)
 	}
-	body, _ := json.Marshal(map[string]string{
+	payload := map[string]string{
 		"project": project, "agent_type": agentType, "pane_id": paneID,
-	})
+	}
+	if len(backend) > 0 {
+		payload["backend"] = backend[0]
+	}
+	body, _ := json.Marshal(payload)
 	resp, err := c.httpc.Post(c.baseURL+"/register", "application/json", bytes.NewReader(body))
 	if err != nil {
 		return "", err
