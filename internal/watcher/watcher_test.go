@@ -264,6 +264,111 @@ func TestNoEnterRetryWhenAgentAcceptsRequest(t *testing.T) {
 	}
 }
 
+// TestReminderInjectedOnIdleEdgeCappedAtTwo: after a Recipient engages a Request
+// but leaves it unanswered, each busy→idle transition injects one standalone
+// Reminder — capped at two — naming only the reply command and request ID, with
+// no Request/task content, no marker text, and no Reply content. Every injection
+// happens while Idle, and no Reply surfaces to the Requester on this path.
+func TestReminderInjectedOnIdleEdgeCappedAtTwo(t *testing.T) {
+	c, mux := setup(t)
+	mux.SetAwaitBusy(watchPane, true) // injections are visibly accepted
+
+	req := message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: watchAgent, Body: "do work"}
+	c.Send(req)
+
+	pass := func(idle bool) {
+		t.Helper()
+		mux.SetIdle(watchPane, idle)
+		if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+	}
+
+	pass(true)  // deliver the Request (injection 0); not engaged yet -> no Reminder
+	pass(false) // Recipient busy on the Request -> engaged
+	pass(true)  // busy→idle edge, still unanswered -> Reminder 1
+	pass(false) // the Reminder re-engaged the Recipient
+	pass(true)  // second edge -> Reminder 2
+	pass(false)
+	pass(true) // third edge, budget spent, within grace -> no Reminder
+
+	injected := mux.Injected(watchPane)
+	if len(injected) != 3 {
+		t.Fatalf("want Request + 2 Reminders = 3 injections, got %d: %v", len(injected), injected)
+	}
+	if injected[0] != injectionText(req) {
+		t.Fatalf("first injection must be the Request, got %q", injected[0])
+	}
+	for _, r := range injected[1:] {
+		if !strings.Contains(r, "agentbus reply req-1") {
+			t.Fatalf("Reminder must name the reply command with the request ID, got %q", r)
+		}
+		if strings.Contains(r, "do work") {
+			t.Fatalf("Reminder must carry no Request/task content, got %q", r)
+		}
+		if strings.Contains(r, "<<") || strings.Contains(r, ">>") {
+			t.Fatalf("Reminder must carry no marker text, got %q", r)
+		}
+	}
+	for i, idle := range mux.InjectedWhileIdle(watchPane) {
+		if !idle {
+			t.Errorf("injection %d happened while the pane was busy", i)
+		}
+	}
+	if got := c.Inbox(requester); len(got) != 0 {
+		t.Fatalf("no Reply expected for the Requester on the Reminder path, got %+v", got)
+	}
+}
+
+// TestNoReminderBeforeEngagement: idle passes before the Recipient ever engages
+// the Request (no busy observation) inject no Reminder — Rule 2.
+func TestNoReminderBeforeEngagement(t *testing.T) {
+	c, mux := setup(t)
+	mux.SetAwaitBusy(watchPane, true)
+	mux.SetIdle(watchPane, true)
+
+	req := message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: watchAgent, Body: "do work"}
+	c.Send(req)
+
+	for range 3 { // deliver, then more Idle passes with no intervening busy edge
+		if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+	}
+
+	if injected := mux.Injected(watchPane); len(injected) != 1 {
+		t.Fatalf("only the Request should be injected before engagement, got %d: %v", len(injected), injected)
+	}
+}
+
+// TestBusyRecipientNoReminderNoDiagnostic: a Recipient that engages the Request
+// then stays busy gets no Reminder and no Diagnostic Reply.
+func TestBusyRecipientNoReminderNoDiagnostic(t *testing.T) {
+	c, mux := setup(t)
+	mux.SetAwaitBusy(watchPane, true)
+
+	req := message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: watchAgent, Body: "do work"}
+	c.Send(req)
+
+	mux.SetIdle(watchPane, true)
+	if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+		t.Fatalf("deliver watch: %v", err)
+	}
+	mux.SetIdle(watchPane, false) // Recipient engaged and stays busy
+	for range 3 {
+		if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+			t.Fatalf("busy watch: %v", err)
+		}
+	}
+
+	if injected := mux.Injected(watchPane); len(injected) != 1 {
+		t.Fatalf("busy Recipient should get only the Request, got %d: %v", len(injected), injected)
+	}
+	if got := c.Inbox(requester); len(got) != 0 {
+		t.Fatalf("busy Recipient must yield no Diagnostic Reply, got %+v", got)
+	}
+}
+
 // TestReplyProducesNothingFurther: a Reply is terminal — beyond its one-time
 // arrival notification it causes no body injection and no new message anywhere.
 func TestReplyProducesNothingFurther(t *testing.T) {

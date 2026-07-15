@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/tk-425/agentbus/internal/db"
@@ -31,6 +32,17 @@ const maxBodyBytes = 32768
 // truncationMarker is appended to a body that exceeded maxBodyBytes.
 const truncationMarker = "\n[truncated — pass file paths for large content]"
 
+// systemSender attributes a broker-generated Diagnostic Reply so it is plainly
+// not the Recipient's own answer.
+const systemSender = "agentbus"
+
+// diagnosticBody is the terminal Diagnostic Reply body, naming the Recipient and
+// request ID and stating no Reply was received. It reaches only the Requester's
+// inbox via the Reply path — no Reply content is ever injected.
+func diagnosticBody(recipient, id string) string {
+	return fmt.Sprintf("[agentbus] no reply from %s for request %s within the reminder budget — the recipient never ran `agentbus reply %s`.", recipient, id, id)
+}
+
 // Broker is the in-memory message bus: a Registry of Agent instances plus a
 // per-agent Queue, optionally exposed over HTTP by Serve. Send enqueues a
 // Message for its recipient; Inbox drains a recipient's queue. The broker is the
@@ -40,7 +52,9 @@ type Broker struct {
 	queue        *Queue
 	correlations *correlations
 
-	db  *sql.DB      // shared store for the brokers row; nil outside Serve
+	db *sql.DB // shared store for the brokers row; nil outside Serve
+
+	mu  sync.Mutex   // guards srv, written by Serve and read by Shutdown concurrently
 	srv *http.Server // set while Serve is running, for Shutdown
 }
 
@@ -118,6 +132,37 @@ func (b *Broker) Reply(id, body string) error {
 	return nil
 }
 
+// EnforceReplies folds one observation of a Recipient's Idle state into every
+// unclaimed Correlation it targets, emits a terminal Diagnostic Reply for each
+// Correlation the idle-grace backstop fires on, and returns the Request IDs the
+// caller must inject a Reminder for. Each Diagnostic Reply carries From=agentbus
+// and ReplyTo=<id>, travels the normal Route path (so a cross-broker Requester is
+// forwarded and the Reply lands in the inbox as unnotified per ADR-0002), and
+// closes the Correlation — a later `agentbus reply <id>` is then ErrUnknownRequest.
+// Routing is done off the correlation lock; enforce has already claimed the
+// diagnosed entries.
+func (b *Broker) EnforceReplies(recipient string, idle bool, now time.Time) []string {
+	remind, diagnose := b.correlations.enforce(recipient, idle, now)
+	for _, d := range diagnose {
+		reply := message.Message{
+			ID:        message.NewID(),
+			Kind:      message.KindReply,
+			From:      systemSender,
+			To:        d.requester,
+			Body:      diagnosticBody(d.recipient, d.id),
+			ReplyTo:   d.id,
+			CreatedAt: time.Now().UTC(),
+		}
+		if err := b.Route(reply); err != nil {
+			// A diagnosed Correlation is already closed (emitted exactly once); on a
+			// routing error log best-effort and continue rather than re-recording it
+			// or blocking the remaining deliveries.
+			log.Printf("agentbus: route diagnostic reply for request %s: %v", d.id, err)
+		}
+	}
+	return remind
+}
+
 // DefaultPortFile returns the path the broker writes its chosen port to,
 // ~/.agentbus/port. Clients read it to find the running broker.
 func DefaultPortFile() string {
@@ -164,19 +209,27 @@ func (b *Broker) Serve(projectRoot, portFile string, mux multiplexer.Multiplexer
 
 	// ReadHeaderTimeout guards against a slow-header (Slowloris) client even
 	// though the listener is loopback-only.
-	b.srv = &http.Server{Handler: b.Handler(), ReadHeaderTimeout: 5 * time.Second}
-	if err := b.srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+	srv := &http.Server{Handler: b.Handler(), ReadHeaderTimeout: 5 * time.Second}
+	b.mu.Lock()
+	b.srv = srv
+	b.mu.Unlock()
+	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
 		return err
 	}
 	return nil
 }
 
-// Shutdown gracefully stops a running Serve.
+// Shutdown gracefully stops a running Serve. srv is read under the same lock
+// Serve writes it, so a Shutdown racing a just-started Serve sees a consistent
+// value rather than a torn read.
 func (b *Broker) Shutdown(ctx context.Context) error {
-	if b.srv == nil {
+	b.mu.Lock()
+	srv := b.srv
+	b.mu.Unlock()
+	if srv == nil {
 		return nil
 	}
-	return b.srv.Shutdown(ctx)
+	return srv.Shutdown(ctx)
 }
 
 // listenInRange returns a listener on the first free loopback port in the scan
