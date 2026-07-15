@@ -264,61 +264,13 @@ func TestNoEnterRetryWhenAgentAcceptsRequest(t *testing.T) {
 	}
 }
 
-// TestReminderInjectedOnIdleEdgeCappedAtTwo: after a Recipient engages a Request
-// but leaves it unanswered, each busy→idle transition injects one standalone
-// Reminder — capped at two — naming only the reply command and request ID, with
-// no Request/task content, no marker text, and no Reply content. Every injection
-// happens while Idle, and no Reply surfaces to the Requester on this path.
-func TestReminderInjectedOnIdleEdgeCappedAtTwo(t *testing.T) {
-	c, mux := setup(t)
-	mux.SetAwaitBusy(watchPane, true) // injections are visibly accepted
-
-	req := message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: watchAgent, Body: "do work"}
-	c.Send(req)
-
-	pass := func(idle bool) {
-		t.Helper()
-		mux.SetIdle(watchPane, idle)
-		if err := Watch(watchAgent, watchPane, mux, c); err != nil {
-			t.Fatalf("watch: %v", err)
-		}
-	}
-
-	pass(true)  // deliver the Request (injection 0); not engaged yet -> no Reminder
-	pass(false) // Recipient busy on the Request -> engaged
-	pass(true)  // busy→idle edge, still unanswered -> Reminder 1
-	pass(false) // the Reminder re-engaged the Recipient
-	pass(true)  // second edge -> Reminder 2
-	pass(false)
-	pass(true) // third edge, budget spent, within grace -> no Reminder
-
-	injected := mux.Injected(watchPane)
-	if len(injected) != 3 {
-		t.Fatalf("want Request + 2 Reminders = 3 injections, got %d: %v", len(injected), injected)
-	}
-	if injected[0] != injectionText(req) {
-		t.Fatalf("first injection must be the Request, got %q", injected[0])
-	}
-	for _, r := range injected[1:] {
-		if !strings.Contains(r, "agentbus reply req-1") {
-			t.Fatalf("Reminder must name the reply command with the request ID, got %q", r)
-		}
-		if strings.Contains(r, "do work") {
-			t.Fatalf("Reminder must carry no Request/task content, got %q", r)
-		}
-		if strings.Contains(r, "<<") || strings.Contains(r, ">>") {
-			t.Fatalf("Reminder must carry no marker text, got %q", r)
-		}
-	}
-	for i, idle := range mux.InjectedWhileIdle(watchPane) {
-		if !idle {
-			t.Errorf("injection %d happened while the pane was busy", i)
-		}
-	}
-	if got := c.Inbox(requester); len(got) != 0 {
-		t.Fatalf("no Reply expected for the Requester on the Reminder path, got %+v", got)
-	}
-}
+// Reminder timing (the reply-grace / idle-grace windows) is driven by continuous
+// Idle duration and is unit-tested at the broker Correlation seam with controlled
+// timestamps (internal/broker/correlation_test.go). It is not re-driven here: the
+// bounds are unexported in internal/broker and a live-time watcher pass cannot
+// fast-forward the grace windows, so the watcher tests assert the injection-safety
+// wiring — no Reminder before engagement and none while the Recipient is busy —
+// which is what the Watcher itself is responsible for.
 
 // TestNoReminderBeforeEngagement: idle passes before the Recipient ever engages
 // the Request (no busy observation) inject no Reminder — Rule 2.

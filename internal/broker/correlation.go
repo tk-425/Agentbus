@@ -11,7 +11,13 @@ import (
 // tests can shrink them, mirroring the tunable bounds in the watcher package.
 var (
 	maxReminders = 2
-	idleGrace    = 60 * time.Second
+	// replyGrace is how long a Recipient must stay continuously Idle and
+	// unclaimed before the first (and each subsequent) Reminder — a window for it
+	// to run its own `agentbus reply` after finishing, so a Reminder never races
+	// the reply. It also absorbs the sub-window Idle blips a heuristic backend
+	// reports between a Recipient's turns.
+	replyGrace = 15 * time.Second
+	idleGrace  = 60 * time.Second
 )
 
 // action is what the Correlation lifecycle asks the caller to do for one
@@ -48,40 +54,46 @@ type correlation struct {
 
 	// Lifecycle state driving Reminder eligibility and the idle-grace backstop.
 	engaged   bool      // a busy observation has been seen (Recipient engaged the Request)
-	wasIdle   bool      // Idle state of the previous observation
 	reminders int       // Reminders emitted so far (capped at maxReminders)
 	idleSince time.Time // start of the current continuous-Idle span; zero while busy
 }
 
 // advance folds one observation of the Recipient's Idle state into the
 // Correlation's lifecycle and reports the resulting action. A busy observation
-// marks the Recipient engaged and clears the idle-grace timer. Before engagement
-// nothing fires (never remind before the Recipient engages the Request). Once
-// engaged, each busy→idle edge emits a Reminder until the budget is spent; once
-// the Recipient stays continuously Idle for idleGrace with the budget spent — or
-// with no further edge since the last Reminder — the backstop asks for a
-// Diagnostic Reply.
+// marks the Recipient engaged and resets the continuous-Idle timer. Nothing fires
+// before engagement (never remind before the Recipient engages the Request). Once
+// engaged, the Correlation is driven by how long the Recipient has stayed
+// continuously Idle: each replyGrace of unbroken Idle emits a Reminder until the
+// budget is spent, and once the budget is spent a further idleGrace of unbroken
+// Idle asks for a Diagnostic Reply. Timing on continuous-Idle duration — rather
+// than a raw busy→idle edge — gives the Recipient a window to run its own reply
+// (so a Reminder never races it) and ignores the sub-window Idle blips a
+// heuristic backend reports mid-turn.
 func (c *correlation) advance(idle bool, now time.Time) action {
-	act := actionNone
-	switch {
-	case !idle:
+	if !idle {
 		c.engaged = true
 		c.idleSince = time.Time{}
-	case c.engaged:
-		edge := !c.wasIdle // busy→idle transition
-		if c.idleSince.IsZero() || edge {
-			c.idleSince = now
-		}
-		switch {
-		case c.reminders < maxReminders && edge:
-			c.reminders++
-			act = actionRemind
-		case now.Sub(c.idleSince) >= idleGrace:
-			act = actionDiagnose
-		}
+		return actionNone
 	}
-	c.wasIdle = idle
-	return act
+	if !c.engaged {
+		return actionNone
+	}
+	if c.idleSince.IsZero() {
+		c.idleSince = now
+	}
+	idleFor := now.Sub(c.idleSince)
+	if c.reminders < maxReminders {
+		if idleFor >= replyGrace {
+			c.reminders++
+			c.idleSince = now // restart the window for the next Reminder / the backstop
+			return actionRemind
+		}
+		return actionNone
+	}
+	if idleFor >= idleGrace {
+		return actionDiagnose
+	}
+	return actionNone
 }
 
 // correlations is the mutex-guarded store keyed by Request ID.

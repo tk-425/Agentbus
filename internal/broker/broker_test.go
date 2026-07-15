@@ -178,7 +178,7 @@ func TestReplyEvictsCorrelationSoIDAnswersOnce(t *testing.T) {
 // `agentbus`, routed to the original Requester's inbox as an unnotified Reply.
 // After emission the Correlation is closed, so a late `agentbus reply` is unknown.
 func TestEnforceRepliesEmitsDiagnosticReply(t *testing.T) {
-	setBounds(t, 2, 60*time.Second)
+	setBounds(t, 2, 15*time.Second, 60*time.Second)
 	b := New()
 	b.Registry.SetLocalProject("proj-a")
 	requester, err := b.Registry.RegisterType("proj-a", "codex", "%1")
@@ -190,11 +190,11 @@ func TestEnforceRepliesEmitsDiagnosticReply(t *testing.T) {
 	}
 
 	base := time.Unix(0, 0)
-	b.EnforceReplies("claude-1", false, base.Add(1)) // engage
-	b.EnforceReplies("claude-1", true, base.Add(2))  // edge 1 -> remind
-	b.EnforceReplies("claude-1", false, base.Add(3)) // busy
-	b.EnforceReplies("claude-1", true, base.Add(4))  // edge 2 -> remind, budget spent
-	remind := b.EnforceReplies("claude-1", true, base.Add(4+61*time.Second))
+	b.EnforceReplies("claude-1", false, base.Add(1))             // engage
+	b.EnforceReplies("claude-1", true, base.Add(2))              // Idle begins
+	b.EnforceReplies("claude-1", true, base.Add(20*time.Second)) // reply-grace elapsed -> remind 1
+	b.EnforceReplies("claude-1", true, base.Add(40*time.Second)) // remind 2, budget spent
+	remind := b.EnforceReplies("claude-1", true, base.Add(40*time.Second+61*time.Second))
 	if len(remind) != 0 {
 		t.Fatalf("backstop pass should ask for no Reminders, got %v", remind)
 	}
@@ -232,7 +232,7 @@ func TestEnforceRepliesEmitsDiagnosticReply(t *testing.T) {
 // TestEnforceRepliesBusyRecipientNoDiagnostic: a Recipient still busy produces no
 // Diagnostic Reply and asks for no Reminders.
 func TestEnforceRepliesBusyRecipientNoDiagnostic(t *testing.T) {
-	setBounds(t, 2, 60*time.Second)
+	setBounds(t, 2, 15*time.Second, 60*time.Second)
 	b := New()
 	b.Registry.SetLocalProject("proj-a")
 	requester, err := b.Registry.RegisterType("proj-a", "codex", "%1")
