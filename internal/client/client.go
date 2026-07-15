@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/tk-425/agentbus/internal/broker"
 	"github.com/tk-425/agentbus/internal/message"
@@ -166,6 +167,18 @@ func (c *Client) MarkNotified(ids []string) {
 	if c.broker != nil {
 		c.broker.MarkNotified(ids)
 	}
+}
+
+// EnforceReplies advances the Reminder/idle-grace lifecycle for recipient's
+// unclaimed Correlations against one observation of its Idle state, emitting any
+// backstopped Diagnostic Reply broker-side and returning the Request IDs the
+// Watcher must inject a Reminder for. In-process only, like UnnotifiedReplies —
+// watchers run inside the broker process; over HTTP it reports none.
+func (c *Client) EnforceReplies(recipient string, idle bool, now time.Time) []string {
+	if c.broker != nil {
+		return c.broker.EnforceReplies(recipient, idle, now)
+	}
+	return nil
 }
 
 // Ack acknowledges a delivered message by id for agent.

@@ -172,6 +172,86 @@ func TestReplyEvictsCorrelationSoIDAnswersOnce(t *testing.T) {
 	}
 }
 
+// TestEnforceRepliesEmitsDiagnosticReply: a Recipient that engages a Request but
+// never replies, spends the Reminder budget, then stays Idle past idle-grace,
+// yields exactly one terminal Diagnostic Reply attributed to the system sender
+// `agentbus`, routed to the original Requester's inbox as an unnotified Reply.
+// After emission the Correlation is closed, so a late `agentbus reply` is unknown.
+func TestEnforceRepliesEmitsDiagnosticReply(t *testing.T) {
+	setBounds(t, 2, 15*time.Second, 60*time.Second)
+	b := New()
+	b.Registry.SetLocalProject("proj-a")
+	requester, err := b.Registry.RegisterType("proj-a", "codex", "%1")
+	if err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+	if err := b.Send(message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: "claude-1", Body: "ping"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	base := time.Unix(0, 0)
+	b.EnforceReplies("claude-1", false, base.Add(1))             // engage
+	b.EnforceReplies("claude-1", true, base.Add(2))              // Idle begins
+	b.EnforceReplies("claude-1", true, base.Add(20*time.Second)) // reply-grace elapsed -> remind 1
+	b.EnforceReplies("claude-1", true, base.Add(40*time.Second)) // remind 2, budget spent
+	remind := b.EnforceReplies("claude-1", true, base.Add(40*time.Second+61*time.Second))
+	if len(remind) != 0 {
+		t.Fatalf("backstop pass should ask for no Reminders, got %v", remind)
+	}
+
+	// The Diagnostic Reply is queued unnotified (announced via the normal path).
+	unnotified := b.UnnotifiedReplies(requester)
+	if len(unnotified) != 1 {
+		t.Fatalf("want 1 unnotified Diagnostic Reply, got %d", len(unnotified))
+	}
+
+	got := b.Inbox(requester)
+	if len(got) != 1 {
+		t.Fatalf("Inbox(%s): want 1 Diagnostic Reply, got %d", requester, len(got))
+	}
+	dr := got[0]
+	if dr.Kind != message.KindReply {
+		t.Fatalf("Diagnostic Reply Kind = %q, want %q", dr.Kind, message.KindReply)
+	}
+	if dr.From != "agentbus" {
+		t.Fatalf("Diagnostic Reply From = %q, want the system sender %q", dr.From, "agentbus")
+	}
+	if dr.ReplyTo != "req-1" {
+		t.Fatalf("Diagnostic Reply ReplyTo = %q, want the request ID %q", dr.ReplyTo, "req-1")
+	}
+	if dr.To != requester {
+		t.Fatalf("Diagnostic Reply To = %q, want the Requester %q", dr.To, requester)
+	}
+
+	// The Correlation is closed: a later voluntary reply is unknown.
+	if err := b.Reply("req-1", "late"); !errors.Is(err, ErrUnknownRequest) {
+		t.Fatalf("late Reply after diagnose: want ErrUnknownRequest, got %v", err)
+	}
+}
+
+// TestEnforceRepliesBusyRecipientNoDiagnostic: a Recipient still busy produces no
+// Diagnostic Reply and asks for no Reminders.
+func TestEnforceRepliesBusyRecipientNoDiagnostic(t *testing.T) {
+	setBounds(t, 2, 15*time.Second, 60*time.Second)
+	b := New()
+	b.Registry.SetLocalProject("proj-a")
+	requester, err := b.Registry.RegisterType("proj-a", "codex", "%1")
+	if err != nil {
+		t.Fatalf("RegisterType: %v", err)
+	}
+	if err := b.Send(message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: "claude-1", Body: "ping"}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	remind := b.EnforceReplies("claude-1", false, time.Unix(0, 0))
+	if len(remind) != 0 {
+		t.Fatalf("busy Recipient should ask for no Reminders, got %v", remind)
+	}
+	if got := b.Inbox(requester); len(got) != 0 {
+		t.Fatalf("busy Recipient should yield no Diagnostic Reply, got %+v", got)
+	}
+}
+
 // TestReplyIsAtomicUnderConcurrentReplies: several replies racing on the same
 // request ID produce exactly one terminal Reply. The correlation is claimed
 // (looked up and removed) under one lock, so only the first caller wins and the

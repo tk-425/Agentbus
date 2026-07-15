@@ -264,6 +264,63 @@ func TestNoEnterRetryWhenAgentAcceptsRequest(t *testing.T) {
 	}
 }
 
+// Reminder timing (the reply-grace / idle-grace windows) is driven by continuous
+// Idle duration and is unit-tested at the broker Correlation seam with controlled
+// timestamps (internal/broker/correlation_test.go). It is not re-driven here: the
+// bounds are unexported in internal/broker and a live-time watcher pass cannot
+// fast-forward the grace windows, so the watcher tests assert the injection-safety
+// wiring — no Reminder before engagement and none while the Recipient is busy —
+// which is what the Watcher itself is responsible for.
+
+// TestNoReminderBeforeEngagement: idle passes before the Recipient ever engages
+// the Request (no busy observation) inject no Reminder — Rule 2.
+func TestNoReminderBeforeEngagement(t *testing.T) {
+	c, mux := setup(t)
+	mux.SetAwaitBusy(watchPane, true)
+	mux.SetIdle(watchPane, true)
+
+	req := message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: watchAgent, Body: "do work"}
+	c.Send(req)
+
+	for range 3 { // deliver, then more Idle passes with no intervening busy edge
+		if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+			t.Fatalf("watch: %v", err)
+		}
+	}
+
+	if injected := mux.Injected(watchPane); len(injected) != 1 {
+		t.Fatalf("only the Request should be injected before engagement, got %d: %v", len(injected), injected)
+	}
+}
+
+// TestBusyRecipientNoReminderNoDiagnostic: a Recipient that engages the Request
+// then stays busy gets no Reminder and no Diagnostic Reply.
+func TestBusyRecipientNoReminderNoDiagnostic(t *testing.T) {
+	c, mux := setup(t)
+	mux.SetAwaitBusy(watchPane, true)
+
+	req := message.Message{ID: "req-1", Kind: message.KindRequest, From: requester, To: watchAgent, Body: "do work"}
+	c.Send(req)
+
+	mux.SetIdle(watchPane, true)
+	if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+		t.Fatalf("deliver watch: %v", err)
+	}
+	mux.SetIdle(watchPane, false) // Recipient engaged and stays busy
+	for range 3 {
+		if err := Watch(watchAgent, watchPane, mux, c); err != nil {
+			t.Fatalf("busy watch: %v", err)
+		}
+	}
+
+	if injected := mux.Injected(watchPane); len(injected) != 1 {
+		t.Fatalf("busy Recipient should get only the Request, got %d: %v", len(injected), injected)
+	}
+	if got := c.Inbox(requester); len(got) != 0 {
+		t.Fatalf("busy Recipient must yield no Diagnostic Reply, got %+v", got)
+	}
+}
+
 // TestReplyProducesNothingFurther: a Reply is terminal — beyond its one-time
 // arrival notification it causes no body injection and no new message anywhere.
 func TestReplyProducesNothingFurther(t *testing.T) {

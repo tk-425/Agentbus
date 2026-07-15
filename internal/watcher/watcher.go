@@ -53,29 +53,70 @@ func Watch(agent, paneID string, mux multiplexer.Multiplexer, c *client.Client) 
 			continue
 		}
 
-		if err := mux.Inject(paneID, injectionText(msg)); err != nil {
+		if err := injectAndConfirm(paneID, injectionText(msg), mux); err != nil {
 			return err
 		}
+	}
+	if err := enforceReminders(agent, paneID, mux, c); err != nil {
+		return err
+	}
+	return notifyReplies(agent, paneID, mux, c)
+}
 
-		// Confirm the agent actually accepted the Request: on a live TUI the
-		// idle status flips to working only after the submission registers. If
-		// the transition is never seen, the Enter may not have registered after
-		// the paste; press it once more. A stray Enter into an idle agent's empty
-		// composer is a no-op.
-		busy, err := mux.AwaitBusy(paneID, busyGrace)
+// injectAndConfirm injects text into an Idle pane and confirms the agent
+// accepted it: on a live TUI the idle status flips to working only after the
+// submission registers. If the transition is never seen, the Enter may not have
+// registered after the paste; press it once more. A stray Enter into an idle
+// agent's empty composer is a no-op. Callers must have confirmed the pane is Idle.
+func injectAndConfirm(paneID, text string, mux multiplexer.Multiplexer) error {
+	if err := mux.Inject(paneID, text); err != nil {
+		return err
+	}
+	busy, err := mux.AwaitBusy(paneID, busyGrace)
+	if err != nil {
+		return err
+	}
+	if !busy {
+		if err := mux.PressEnter(paneID); err != nil {
+			return err
+		}
+		if _, err := mux.AwaitBusy(paneID, busyGrace); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// enforceReminders folds this pass's single observation of the Recipient's Idle
+// state into the broker's Correlation lifecycle: it injects a standalone Reminder
+// for each unclaimed Correlation the broker says has returned to Idle still
+// unanswered (at most two per Correlation), while the broker emits any terminal
+// Diagnostic Reply itself for a Correlation past the idle-grace backstop. A
+// Reminder is only ever returned — and so injected — while the Recipient is Idle,
+// preserving the request/reply asymmetry (ADR-0001): it carries no Reply content,
+// only the request ID and the reply command.
+func enforceReminders(agent, paneID string, mux multiplexer.Multiplexer, c *client.Client) error {
+	idle, err := mux.IsIdle(paneID)
+	if err != nil {
+		return err
+	}
+	for _, id := range c.EnforceReplies(agent, idle, time.Now()) {
+		// Re-confirm Idle before each injection: the previous Reminder in this pass
+		// drove the pane busy, and injecting into a non-idle pane would break the
+		// Idle-only injection safety (ADR-0001). A pane that has not returned to
+		// Idle defers its remaining Reminders to a later pass.
+		ready, err := waitIdle(paneID, mux)
 		if err != nil {
 			return err
 		}
-		if !busy {
-			if err := mux.PressEnter(paneID); err != nil {
-				return err
-			}
-			if _, err := mux.AwaitBusy(paneID, busyGrace); err != nil {
-				return err
-			}
+		if !ready {
+			break
+		}
+		if err := injectAndConfirm(paneID, reminderText(id), mux); err != nil {
+			return err
 		}
 	}
-	return notifyReplies(agent, paneID, mux, c)
+	return nil
 }
 
 // notifyReplies announces newly arrived Replies (ADR-0002): while the pane is
@@ -137,6 +178,14 @@ func waitIdle(paneID string, mux multiplexer.Multiplexer) (bool, error) {
 		time.Sleep(idlePollInterval)
 	}
 	return false, nil
+}
+
+// reminderText is a standalone Reminder nudging a Recipient that has not yet
+// answered request id: it names only the request ID and the exact reply command,
+// carrying no task content and no Reply content (ADR-0001), and no marker text.
+func reminderText(id string) string {
+	return "[agentbus: reminder — you have not yet replied to request " + id +
+		". Run exactly: agentbus reply " + id + " \"<your answer>\". Replace <your answer> with your full reply.]"
 }
 
 // injectionText appends the reply-command instruction to the Request body on the
